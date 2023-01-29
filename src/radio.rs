@@ -57,13 +57,13 @@ pub struct RxOk {
     pub frame: FrameBuffer<'static>,
 }
 
-// TODO: context parameter?
 /// Type of the callback function called when the requested RX operation is completed
-pub type RxCallback = fn(Result<RxOk, Error>);
+pub type RxCallback = fn(Result<RxOk, Error>, Context);
 
 /// Internal data required in the RX state
 struct RxData {
     callback: RxCallback,
+    context: Context,
     rx_buffer: FrameBuffer<'static>,
 }
 
@@ -351,22 +351,16 @@ impl Phy {
     /// }
     /// ```
     pub fn tx(&self, frame: &[u8], callback: TxCallback, context: Context) -> Result<(), Error> {
-        let mut result = Ok(());
-
         // FSM:
         // | idle |  <----> | tx |
-        self.use_isr_data(|i| {
-            result = match &i.state {
-                State::Idle => {
-                    i.state = State::Tx(TxData { callback, context });
-                    Phy::enter_tx(frame, i);
-                    Ok(())
-                }
-                _ => Err(Error::WouldBlock),
+        self.use_isr_data(|i| match &i.state {
+            State::Idle => {
+                i.state = State::Tx(TxData { callback, context });
+                Phy::enter_tx(frame, i);
+                Ok(())
             }
-        });
-
-        result
+            _ => Err(Error::WouldBlock),
+        })
     }
 
     /// FSM procedure on entering RX state
@@ -414,12 +408,12 @@ impl Phy {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// use nrf52840_hal::pac::Peripherals;
-    /// use nrf_radio::radio::{Phy, RxOk};
+    /// use nrf_radio::radio::{Phy, RxOk, Context};
     /// use nrf_radio::error::Error;
     /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
     ///
-    /// fn rx_callback(result: Result<RxOk, Error>) {
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
     ///   match result {
     ///     Ok(rx_ok) => {
     ///       println!("Received frame: {:x?}", rx_ok.frame);
@@ -437,11 +431,16 @@ impl Phy {
     ///   let phy = Phy::new(&peripherals.RADIO);
     ///   phy.configure_802154();
     ///
-    ///   let result = phy.rx(buffer_allocator.get_frame().unwrap(), rx_callback);
+    ///   let result = phy.rx(buffer_allocator.get_frame().unwrap(), rx_callback, &None::<usize>);
     ///   assert_eq!(result, Ok(()));
     /// }
     /// ```
-    pub fn rx(&self, rx_buffer: FrameBuffer<'static>, callback: RxCallback) -> Result<(), Error> {
+    pub fn rx(
+        &self,
+        rx_buffer: FrameBuffer<'static>,
+        callback: RxCallback,
+        context: Context,
+    ) -> Result<(), Error> {
         if rx_buffer.len() <= 127 {
             // TODO: remove magic number
             return Err(Error::TooSmallBuffer);
@@ -452,6 +451,7 @@ impl Phy {
                 Phy::enter_rx(&rx_buffer, i);
                 i.state = State::Rx(RxData {
                     callback,
+                    context,
                     rx_buffer,
                 });
                 Ok(())
@@ -472,7 +472,7 @@ fn irq_handler() {
     enum Callback {
         None,
         Tx(TxCallback, Context),
-        Rx(RxCallback, Result<RxOk, Error>),
+        Rx(RxCallback, Context, Result<RxOk, Error>),
     }
 
     let mut callback = Callback::None;
@@ -490,6 +490,7 @@ fn irq_handler() {
 
                     callback = Callback::Rx(
                         rx_data.callback,
+                        rx_data.context,
                         Ok(RxOk {
                             frame: rx_data.rx_buffer,
                         }),
@@ -505,7 +506,8 @@ fn irq_handler() {
                         .events_crcerror
                         .write(|w| w.events_crcerror().clear_bit());
 
-                    callback = Callback::Rx(rx_data.callback, Err(Error::IncorrectCrc));
+                    callback =
+                        Callback::Rx(rx_data.callback, rx_data.context, Err(Error::IncorrectCrc));
                 } else {
                     panic!("Unexpected event received in Rx state");
                 }
@@ -538,7 +540,7 @@ fn irq_handler() {
 
     match callback {
         Callback::None => (),
-        Callback::Rx(callback, result) => callback(result),
+        Callback::Rx(callback, context, result) => callback(result, context),
         Callback::Tx(callback, context) => callback(Ok(()), context),
     };
 }
@@ -692,13 +694,14 @@ mod tests {
         static mut CALLED: bool = false;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(_result: Result<RxOk, Error>) {
+        fn callback(_result: Result<RxOk, Error>, _context: Context) {
             unsafe { CALLED = true };
         }
 
         let result = phy.rx(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
+            &None::<usize>,
         );
 
         assert_eq!(result, Ok(()));
@@ -735,7 +738,7 @@ mod tests {
         static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(result: Result<RxOk, Error>) {
+        fn callback(result: Result<RxOk, Error>, _context: Context) {
             unsafe { CALLED = true };
             unsafe { RECEIVED_RESULT = Some(result) };
         }
@@ -743,6 +746,7 @@ mod tests {
         let result = phy.rx(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
+            &None::<usize>,
         );
 
         assert_eq!(result, Ok(()));
@@ -780,7 +784,7 @@ mod tests {
         static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(result: Result<RxOk, Error>) {
+        fn callback(result: Result<RxOk, Error>, _context: Context) {
             unsafe { CALLED = true };
             unsafe { RECEIVED_RESULT = Some(result) };
         }
@@ -788,6 +792,7 @@ mod tests {
         let result = phy.rx(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
+            &None::<usize>,
         );
 
         assert_eq!(result, Ok(()));
@@ -816,13 +821,14 @@ mod tests {
         static mut RX_CALLED: bool = false;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn rx_callback(_result: Result<RxOk, Error>) {
+        fn rx_callback(_result: Result<RxOk, Error>, _context: Context) {
             unsafe { RX_CALLED = true };
         }
 
         let result = phy.rx(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             rx_callback,
+            &None::<usize>,
         );
         assert_eq!(result, Ok(()));
 
@@ -877,13 +883,14 @@ mod tests {
 
         static mut RX_CALLED: bool = false;
 
-        fn rx_callback(_result: Result<RxOk, Error>) {
+        fn rx_callback(_result: Result<RxOk, Error>, _context: Context) {
             unsafe { RX_CALLED = true };
         }
 
         let result = phy.rx(
             create_frame_buffer_from_static_buffer(unsafe { &mut RX_FRAME }),
             rx_callback,
+            &None::<usize>,
         );
         assert_eq!(result, Err(Error::WouldBlock));
 
