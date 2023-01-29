@@ -3,6 +3,8 @@
 pub enum Error {
     /// The module is busy with ongoing operation
     WouldBlock,
+    /// Not enough available memory
+    NoMemory,
     /// The passed buffer cannot contain all necessary data
     TooSmallBuffer,
     /// The received frame is invalid
