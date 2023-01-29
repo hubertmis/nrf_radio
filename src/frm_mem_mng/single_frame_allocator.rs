@@ -34,15 +34,15 @@ impl SingleFrameAllocator {
     }
 
     /// Helper function to get access to the frame allocator singleton
-    fn use_frame_allocator<F>(func: F)
+    fn use_frame_allocator<F, R>(func: F) -> R
     where
-        F: FnOnce(&mut SingleFrameAllocator),
+        F: FnOnce(&mut SingleFrameAllocator) -> R,
     {
         crit_sect::locked(|cs| {
             let frame_allocator_option = &mut FRAME_ALLOCATOR.borrow(cs).borrow_mut();
             let frame_allocator = &mut frame_allocator_option.as_mut().unwrap();
-            func(frame_allocator);
-        });
+            func(frame_allocator)
+        })
     }
 
     /// Initializes the [`SingleFrameAllocator`] singleton
@@ -91,10 +91,9 @@ impl SingleFrameAllocator {
 
 impl FrameAllocator for SingleFrameAllocator {
     fn get_frame(&self) -> Result<FrameBuffer<'static>, Error> {
-        let mut result = Err(Error::WouldBlock);
         SingleFrameAllocator::use_frame_allocator(|fa| {
-            result = if fa.is_allocated {
-                Err(Error::WouldBlock)
+            if fa.is_allocated {
+                Err(Error::NoMemory)
             } else {
                 fa.is_allocated = true;
                 Ok(FrameBuffer::new(
@@ -103,9 +102,7 @@ impl FrameAllocator for SingleFrameAllocator {
                     &None::<usize>,
                 ))
             }
-        });
-
-        result
+        })
     }
 }
 
