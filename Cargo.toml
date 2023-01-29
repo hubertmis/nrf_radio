@@ -1,0 +1,16 @@
+[package]
+name = "nrf_radio"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nrf52840-hal = "0.16"
+cortex-m = "0.7" # To be removed when critical sections is handled differently than disabling all IRQs
+defmt = "0.3" # To be optional, based on features
+
+[dev-dependencies]
+mockall = "0.11"
+mockall_double = "0.3"
+serial_test = "0.10"
