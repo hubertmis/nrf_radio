@@ -1,13 +1,7 @@
 use core::fmt::{Debug, Formatter};
 use core::ops::{Deref, DerefMut};
 
-use crate::frame_buffer::single_frame_allocator::SingleFrameAllocator;
-
-pub enum FrameAllocators<'a> {
-    #[cfg(test)]
-    Dummy,
-    SingleFrameAllocator(&'a SingleFrameAllocator),
-}
+use crate::frame_buffer::frame_allocator::{FrameAllocator, Free};
 
 /// Buffer representing a radio frame data and buffer management metadata
 ///
@@ -18,12 +12,12 @@ pub enum FrameAllocators<'a> {
 ///
 /// [`FrameBuffer`] is a smart pointer dereferencing a bytes slice.
 pub struct FrameBuffer<'a> {
-    allocator: FrameAllocators<'a>,
+    allocator: FrameAllocator<'a>,
     frame: &'a mut [u8],
 }
 
 impl<'a> FrameBuffer<'a> {
-    pub fn new(allocator: FrameAllocators<'a>, frame: &'a mut [u8]) -> Self {
+    pub fn new(allocator: FrameAllocator<'a>, frame: &'a mut [u8]) -> Self {
         Self { allocator, frame }
     }
 }
@@ -52,13 +46,7 @@ impl<'a> DerefMut for FrameBuffer<'a> {
 
 impl<'a> Drop for FrameBuffer<'a> {
     fn drop(&mut self) {
-        match self.allocator {
-            #[cfg(test)]
-            FrameAllocators::Dummy => (),
-            FrameAllocators::SingleFrameAllocator(allocator) => {
-                SingleFrameAllocator::release_frame(allocator, self)
-            }
-        }
+        self.allocator.free();
     }
 }
 

@@ -416,7 +416,7 @@ impl Phy {
     /// use nrf52840_hal::pac::Peripherals;
     /// use nrf_radio::radio::{Phy, RxOk};
     /// use nrf_radio::error::Error;
-    /// use nrf_radio::frame_buffer::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frame_buffer::frame_allocator::GetFrame;
     /// use nrf_radio::frame_buffer::single_frame_allocator::SingleFrameAllocator;
     ///
     /// fn rx_callback(result: Result<RxOk, Error>) {
@@ -549,7 +549,7 @@ missing_test_fns!();
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame_buffer::frame_buffer::FrameAllocators;
+    use crate::frame_buffer::frame_allocator::{DummyAllocator, FrameAllocator};
     use serial_test::serial;
 
     // RADIO peripheral mock
@@ -572,7 +572,10 @@ mod tests {
     }
 
     fn create_frame_buffer_from_static_buffer(static_buffer: &'static mut [u8]) -> FrameBuffer {
-        FrameBuffer::new(FrameAllocators::Dummy, static_buffer)
+        FrameBuffer::new(
+            FrameAllocator::DummyAllocator(&DummyAllocator),
+            static_buffer,
+        )
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use super::frame_allocator::FrameAllocator;
-use super::frame_buffer::{FrameAllocators, FrameBuffer};
+use super::frame_allocator::{FrameAllocator, Free, GetFrame};
+use super::frame_buffer::FrameBuffer;
 use crate::crit_sect;
 use crate::error::Error;
 use core::{cell::UnsafeCell, sync::atomic::AtomicBool};
@@ -57,20 +57,11 @@ impl SingleFrameAllocator {
             data: UnsafeCell::new([0; Self::BUF_SIZE]),
         }
     }
-
-    /// Releases an allocated frame
-    ///
-    /// Function called when any [`FrameBuffer`](super::frame_buffer::FrameBuffer) created by this
-    /// allocator is dropped.
-    pub fn release_frame(&self, _frame: &mut FrameBuffer) {
-        self.is_allocated
-            .store(false, core::sync::atomic::Ordering::Relaxed);
-    }
 }
 
 unsafe impl Sync for SingleFrameAllocator {}
 
-impl FrameAllocator for SingleFrameAllocator {
+impl GetFrame for SingleFrameAllocator {
     fn get_frame(&self) -> Result<FrameBuffer, Error> {
         if self
             .is_allocated
@@ -83,12 +74,23 @@ impl FrameAllocator for SingleFrameAllocator {
             .is_ok()
         {
             Ok(FrameBuffer::new(
-                FrameAllocators::SingleFrameAllocator(self),
+                FrameAllocator::SingleFrameAllocator(self),
                 unsafe { &mut *self.data.get() },
             ))
         } else {
             Err(Error::WouldBlock)
         }
+    }
+}
+
+impl Free for SingleFrameAllocator {
+    /// Releases an allocated frame
+    ///
+    /// Function called when any [`FrameBuffer`](super::frame_buffer::FrameBuffer) created by this
+    /// allocator is dropped.
+    fn free(&self) {
+        self.is_allocated
+            .store(false, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
