@@ -1,15 +1,16 @@
-use core::cell::RefCell;
+use super::frame_allocator::FrameAllocator;
+use super::frame_buffer::{DropMetadata, FrameBuffer};
 use crate::crit_sect;
 use crate::error::Error;
 use crate::mutex::Mutex;
-use super::frame_allocator::FrameAllocator;
-use super::frame_buffer::{DropMetadata, FrameBuffer};
+use core::cell::RefCell;
 
 #[cfg(test)]
 const NUM_BUFS: usize = 1;
 const BUF_SIZE: usize = 128;
 
-static FRAME_ALLOCATOR: Mutex<RefCell<Option<SingleFrameAllocator>>> = Mutex::new(RefCell::new(None));
+static FRAME_ALLOCATOR: Mutex<RefCell<Option<SingleFrameAllocator>>> =
+    Mutex::new(RefCell::new(None));
 static mut DATA: [u8; BUF_SIZE] = [0; BUF_SIZE];
 
 /// Simple radio frames allocator
@@ -34,7 +35,8 @@ impl SingleFrameAllocator {
 
     /// Helper function to get access to the frame allocator singleton
     fn use_frame_allocator<F>(func: F)
-        where F: FnOnce(&mut SingleFrameAllocator)
+    where
+        F: FnOnce(&mut SingleFrameAllocator),
     {
         crit_sect::locked(|cs| {
             let frame_allocator_option = &mut FRAME_ALLOCATOR.borrow(cs).borrow_mut();
@@ -71,9 +73,7 @@ impl SingleFrameAllocator {
             assert!(prev_frame_allocator.is_none());
         });
 
-        let phantom_allocator = Self {
-            is_allocated: true,
-        };
+        let phantom_allocator = Self { is_allocated: true };
         phantom_allocator
     }
 
@@ -98,9 +98,9 @@ impl FrameAllocator for SingleFrameAllocator {
             } else {
                 fa.is_allocated = true;
                 Ok(FrameBuffer::new(
-                    unsafe {&mut DATA},
+                    unsafe { &mut DATA },
                     Some(SingleFrameAllocator::release_frame),
-                    &None::<usize>
+                    &None::<usize>,
                 ))
             }
         });
@@ -111,13 +111,11 @@ impl FrameAllocator for SingleFrameAllocator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::frame_allocator::tests::*;
+    use super::*;
     use serial_test::serial;
 
-    static PHANTOM_ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator {
-        is_allocated: true,
-    };
+    static PHANTOM_ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator { is_allocated: true };
 
     #[test]
     #[serial]
@@ -152,6 +150,9 @@ mod tests {
         SingleFrameAllocator::reset();
         SingleFrameAllocator::new();
 
-        test_body_allocated_frame_dropped_after_released_from_static_variable(&PHANTOM_ALLOCATOR, NUM_BUFS);
+        test_body_allocated_frame_dropped_after_released_from_static_variable(
+            &PHANTOM_ALLOCATOR,
+            NUM_BUFS,
+        );
     }
 }

@@ -1,5 +1,5 @@
-use crate::error::Error;
 use super::frame_buffer::FrameBuffer;
+use crate::error::Error;
 
 #[cfg(test)]
 use mockall::*;
@@ -55,11 +55,17 @@ pub mod tests {
         frames
     }
 
-    fn allocate_all_frames<FA: FrameAllocator>(allocator: &FA, num_bufs: usize) -> Vec<FrameBuffer> {
+    fn allocate_all_frames<FA: FrameAllocator>(
+        allocator: &FA,
+        num_bufs: usize,
+    ) -> Vec<FrameBuffer> {
         allocate_number_of_frames(allocator, num_bufs)
     }
 
-    fn allocate_all_frames_but_one<FA: FrameAllocator>(allocator: &FA, num_bufs: usize) -> Vec<FrameBuffer> {
+    fn allocate_all_frames_but_one<FA: FrameAllocator>(
+        allocator: &FA,
+        num_bufs: usize,
+    ) -> Vec<FrameBuffer> {
         allocate_number_of_frames(allocator, num_bufs - 1)
     }
 
@@ -73,7 +79,10 @@ pub mod tests {
         }
     }
 
-    pub fn test_body_allocate_more_frames_than_available<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocate_more_frames_than_available<FA: FrameAllocator>(
+        allocator: &FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames(allocator, num_available_frames);
 
         let frame = allocator.get_frame();
@@ -81,7 +90,10 @@ pub mod tests {
         // TODO: Verify which error
     }
 
-    pub fn test_body_allocated_frame_stored_in_static_variable<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocated_frame_stored_in_static_variable<FA: FrameAllocator>(
+        allocator: &FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);
 
         static mut STATIC_FRAME: Option<FrameBuffer> = None;
@@ -90,14 +102,19 @@ pub mod tests {
             let frame = allocator.get_frame();
             assert!(frame.is_ok());
             let frame = Some(frame.unwrap());
-            unsafe {STATIC_FRAME = frame};
+            unsafe { STATIC_FRAME = frame };
         }
 
         let frame = allocator.get_frame();
         assert!(frame.is_err());
     }
 
-    pub fn test_body_allocated_frame_dropped_after_released_from_static_variable<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocated_frame_dropped_after_released_from_static_variable<
+        FA: FrameAllocator,
+    >(
+        allocator: &FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);
 
         static mut STATIC_FRAME: Option<FrameBuffer> = None;
@@ -106,10 +123,10 @@ pub mod tests {
             let frame = allocator.get_frame();
             assert!(frame.is_ok());
             let frame = Some(frame.unwrap());
-            unsafe {STATIC_FRAME = frame};
+            unsafe { STATIC_FRAME = frame };
         }
 
-        unsafe {STATIC_FRAME = None};
+        unsafe { STATIC_FRAME = None };
 
         let frame = allocator.get_frame();
         assert!(frame.is_ok());
