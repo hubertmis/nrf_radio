@@ -59,6 +59,7 @@ impl SingleFrameAllocator {
     }
 }
 
+// Safety: All methods of SingleFrameAllocator can be called from multiple threads and it's internal state is always coherent.
 unsafe impl Sync for SingleFrameAllocator {}
 
 impl GetFrame for SingleFrameAllocator {
@@ -75,6 +76,7 @@ impl GetFrame for SingleFrameAllocator {
         {
             Ok(FrameBuffer::new(
                 FrameAllocator::SingleFrameAllocator(self),
+                // Safety: We are in this branch only if we successfully locked the allocator, thus we are the only one that can access the shared internal state.
                 unsafe { &mut *self.data.get() },
             ))
         } else {
