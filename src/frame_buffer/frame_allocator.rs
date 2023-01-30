@@ -1,11 +1,7 @@
 use super::frame_buffer::FrameBuffer;
 use crate::error::Error;
 
-#[cfg(test)]
-use mockall::*;
-
 /// Trait of any frame buffers allocator for radio frames
-#[cfg_attr(test, automock)]
 pub trait FrameAllocator {
     // TODO: consider size of the requested frame
     /// Allocates a single frame
@@ -91,7 +87,7 @@ pub mod tests {
     }
 
     pub fn test_body_allocated_frame_stored_in_static_variable<FA: FrameAllocator>(
-        allocator: &FA,
+        allocator: &'static FA,
         num_available_frames: usize,
     ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);
@@ -112,7 +108,7 @@ pub mod tests {
     pub fn test_body_allocated_frame_dropped_after_released_from_static_variable<
         FA: FrameAllocator,
     >(
-        allocator: &FA,
+        allocator: &'static FA,
         num_available_frames: usize,
     ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);

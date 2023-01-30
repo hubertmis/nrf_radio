@@ -1,17 +1,13 @@
 use super::frame_allocator::FrameAllocator;
-use super::frame_buffer::{DropMetadata, FrameBuffer};
+use super::frame_buffer::{FrameAllocators, FrameBuffer};
 use crate::crit_sect;
 use crate::error::Error;
-use crate::mutex::Mutex;
-use core::cell::RefCell;
+use core::{cell::UnsafeCell, sync::atomic::AtomicBool};
 
 #[cfg(test)]
 const NUM_BUFS: usize = 1;
-const BUF_SIZE: usize = 128;
 
-static FRAME_ALLOCATOR: Mutex<RefCell<Option<SingleFrameAllocator>>> =
-    Mutex::new(RefCell::new(None));
-static mut DATA: [u8; BUF_SIZE] = [0; BUF_SIZE];
+static FRAME_ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator::new();
 
 /// Simple radio frames allocator
 ///
@@ -19,28 +15,20 @@ static mut DATA: [u8; BUF_SIZE] = [0; BUF_SIZE];
 ///
 /// Supports only one instance, allocating single frame.
 pub struct SingleFrameAllocator {
-    is_allocated: bool,
+    is_allocated: AtomicBool,
+    data: UnsafeCell<[u8; SingleFrameAllocator::BUF_SIZE]>,
 }
 
 impl SingleFrameAllocator {
-    /// Reset module
-    ///
-    /// This function is intended to be used between unit tests
-    #[doc(hidden)]
-    pub fn reset() {
-        crit_sect::locked(|cs| {
-            FRAME_ALLOCATOR.borrow(cs).replace(None);
-        });
-    }
+    const BUF_SIZE: usize = 128;
 
     /// Helper function to get access to the frame allocator singleton
-    fn use_frame_allocator<F>(func: F)
+    pub fn use_frame_allocator<F>(func: F)
     where
-        F: FnOnce(&mut SingleFrameAllocator),
+        F: FnOnce(&SingleFrameAllocator),
     {
-        crit_sect::locked(|cs| {
-            let frame_allocator_option = &mut FRAME_ALLOCATOR.borrow(cs).borrow_mut();
-            let frame_allocator = &mut frame_allocator_option.as_mut().unwrap();
+        crit_sect::locked(|_cs| {
+            let frame_allocator = &FRAME_ALLOCATOR;
             func(frame_allocator);
         });
     }
@@ -63,49 +51,44 @@ impl SingleFrameAllocator {
     ///   let allocator = SingleFrameAllocator::new();
     /// # }
     /// ```
-    pub fn new() -> Self {
-        let frame_allocator = Self {
-            is_allocated: false,
-        };
-
-        crit_sect::locked(|cs| {
-            let prev_frame_allocator = FRAME_ALLOCATOR.borrow(cs).replace(Some(frame_allocator));
-            assert!(prev_frame_allocator.is_none());
-        });
-
-        let phantom_allocator = Self { is_allocated: true };
-        phantom_allocator
+    pub const fn new() -> Self {
+        Self {
+            is_allocated: AtomicBool::new(false),
+            data: UnsafeCell::new([0; Self::BUF_SIZE]),
+        }
     }
 
     /// Releases an allocated frame
     ///
     /// Function called when any [`FrameBuffer`](super::frame_buffer::FrameBuffer) created by this
     /// allocator is dropped.
-    fn release_frame(_frame: &mut FrameBuffer, _metadata: DropMetadata) {
-        SingleFrameAllocator::use_frame_allocator(|fa| {
-            assert!(fa.is_allocated);
-            fa.is_allocated = false;
-        });
+    pub fn release_frame(&self, _frame: &mut FrameBuffer) {
+        self.is_allocated
+            .store(false, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
+unsafe impl Sync for SingleFrameAllocator {}
+
 impl FrameAllocator for SingleFrameAllocator {
     fn get_frame(&self) -> Result<FrameBuffer, Error> {
-        let mut result = Err(Error::WouldBlock);
-        SingleFrameAllocator::use_frame_allocator(|fa| {
-            result = if fa.is_allocated {
-                Err(Error::WouldBlock)
-            } else {
-                fa.is_allocated = true;
-                Ok(FrameBuffer::new(
-                    unsafe { &mut DATA },
-                    Some(SingleFrameAllocator::release_frame),
-                    &None::<usize>,
-                ))
-            }
-        });
-
-        result
+        if self
+            .is_allocated
+            .compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::Release,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            Ok(FrameBuffer::new(
+                FrameAllocators::SingleFrameAllocator(self),
+                unsafe { &mut *self.data.get() },
+            ))
+        } else {
+            Err(Error::WouldBlock)
+        }
     }
 }
 
@@ -115,44 +98,33 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    static PHANTOM_ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator { is_allocated: true };
-
     #[test]
-    #[serial]
     fn test_allocate_a_frame() {
-        SingleFrameAllocator::reset();
-        SingleFrameAllocator::new();
+        let allocator = SingleFrameAllocator::new();
 
-        test_body_allocate_a_frame(&PHANTOM_ALLOCATOR);
+        test_body_allocate_a_frame(&allocator);
     }
 
     #[test]
-    #[serial]
     fn test_allocate_more_frames_than_available() {
-        SingleFrameAllocator::reset();
-        SingleFrameAllocator::new();
+        let allocator = SingleFrameAllocator::new();
 
-        test_body_allocate_more_frames_than_available(&PHANTOM_ALLOCATOR, NUM_BUFS);
+        test_body_allocate_more_frames_than_available(&allocator, NUM_BUFS);
     }
 
     #[test]
     #[serial]
     fn test_allocated_frame_stored_in_static_variable() {
-        SingleFrameAllocator::reset();
-        SingleFrameAllocator::new();
+        static ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator::new();
 
-        test_body_allocated_frame_stored_in_static_variable(&PHANTOM_ALLOCATOR, NUM_BUFS);
+        test_body_allocated_frame_stored_in_static_variable(&ALLOCATOR, NUM_BUFS);
     }
 
     #[test]
     #[serial]
     fn test_allocated_frame_dropped_after_released_from_static_variable() {
-        SingleFrameAllocator::reset();
-        SingleFrameAllocator::new();
+        static ALLOCATOR: SingleFrameAllocator = SingleFrameAllocator::new();
 
-        test_body_allocated_frame_dropped_after_released_from_static_variable(
-            &PHANTOM_ALLOCATOR,
-            NUM_BUFS,
-        );
+        test_body_allocated_frame_dropped_after_released_from_static_variable(&ALLOCATOR, NUM_BUFS);
     }
 }

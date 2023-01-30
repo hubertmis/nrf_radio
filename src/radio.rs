@@ -54,7 +54,7 @@ pub struct RxOk {
     ///
     /// For IEEE 802.15.4 this buffer contains PHR and PSDU of the received frame, where MFR might
     /// be malformed
-    pub frame: FrameBuffer,
+    pub frame: FrameBuffer<'static>,
 }
 
 // TODO: context parameter?
@@ -64,7 +64,7 @@ pub type RxCallback = fn(Result<RxOk, Error>);
 /// Internal data required in the RX state
 struct RxData {
     callback: RxCallback,
-    rx_buffer: FrameBuffer,
+    rx_buffer: FrameBuffer<'static>,
 }
 
 /// The state of the software PHY FSM
@@ -431,7 +431,7 @@ impl Phy {
     /// }
     ///
     /// fn main() {
-    ///   let buffer_allocator = SingleFrameAllocator::new();
+    ///   static buffer_allocator: SingleFrameAllocator = SingleFrameAllocator::new();
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///   let phy = Phy::new(&peripherals.RADIO);
@@ -441,7 +441,7 @@ impl Phy {
     ///   assert_eq!(result, Ok(()));
     /// }
     /// ```
-    pub fn rx(&self, rx_buffer: FrameBuffer, callback: RxCallback) -> Result<(), Error> {
+    pub fn rx(&self, rx_buffer: FrameBuffer<'static>, callback: RxCallback) -> Result<(), Error> {
         if rx_buffer.len() <= 127 {
             // TODO: remove magic number
             return Err(Error::TooSmallBuffer);
@@ -549,6 +549,7 @@ missing_test_fns!();
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame_buffer::frame_buffer::FrameAllocators;
     use serial_test::serial;
 
     // RADIO peripheral mock
@@ -571,7 +572,7 @@ mod tests {
     }
 
     fn create_frame_buffer_from_static_buffer(static_buffer: &'static mut [u8]) -> FrameBuffer {
-        FrameBuffer::new(static_buffer, None, &None::<usize>)
+        FrameBuffer::new(FrameAllocators::Dummy, static_buffer)
     }
 
     #[test]
