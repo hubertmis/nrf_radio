@@ -1,10 +1,11 @@
 use core::any::Any;
 use core::cell::RefCell;
 use core::ops::Deref;
-use crate::error::Error;
-use crate::mutex::Mutex;
+use once_cell::sync::OnceCell;
 
 use crate::frame_buffer::frame_buffer::FrameBuffer;
+use crate::error::Error;
+use crate::mutex::Mutex;
 
 // Port to nRF52840
 use nrf52840_hal::pac::radio;
@@ -16,6 +17,8 @@ type RadioRegisterBlock = radio::RegisterBlock;
 //// in unit tests running on a host PC.
 unsafe impl Send for RadioPeriphWrapper {} // Is this really safe considering it's just pointer
                                            // dereference?
+
+#[derive(Debug)]
 struct RadioPeriphWrapper {
     ptr: *const RadioRegisterBlock,
 }
@@ -44,6 +47,7 @@ pub type Context = &'static (dyn Any + Send + Sync);
 pub type TxCallback = fn(Result<(), Error>, Context);
 
 /// Internal data required in the TX state
+#[derive(Debug)]
 struct TxData {
     callback: TxCallback,
     context: Context,
@@ -64,31 +68,29 @@ pub struct RxOk {
 pub type RxCallback = fn(Result<RxOk, Error>);
 
 /// Internal data required in the RX state
+#[derive(Debug)]
 struct RxData {
     callback: RxCallback,
     rx_buffer: FrameBuffer,
 }
 
 /// The state of the software PHY FSM
+#[derive(Debug)]
 enum State {
     // In Idle state RADIO is being disabled (RXDISABLE, TXDISABLE) or already disabled (DISABLED).
     // The INTEN register is cleared. The SHORTS, PACKETPTR, EVENTS_ are undefined (expected to be
-    // overriden when entering the next state). 
+    // overriden when entering the next state).
     Idle,
     Tx(TxData),
     Rx(RxData),
 }
 
 /// Data accessible by an ISR
+#[derive(Debug)]
 struct IsrData {
     radio: RadioPeriphWrapper,
     state: State,
 }
-
-// RefCell is required to verify run-time if critical sections work as expected
-// There is only one ISR_DATA instance, because there is only one ISR handler. This instance should
-// be multiplied (an array) if there were more peripheral instances (implying more ISRs) to handle.
-static ISR_DATA: Mutex<RefCell<Option<IsrData>>> = Mutex::new(RefCell::new(None));
 
 /// Macro used to build tests on a host
 ///
@@ -124,26 +126,22 @@ macro_rules! missing_test_fns {
 ///   phy.configure_802154();
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct Phy {
-    isr_data: &'static Mutex<RefCell<Option<IsrData>>>,
+    // RefCell is required to verify run-time if critical sections work as expected
+    // There is only one ISR_DATA instance, because there is only one ISR handler. This instance should
+    // be multiplied (an array) if there were more peripheral instances (implying more ISRs) to handle.
+    isr_data: Mutex<RefCell<IsrData>>,
 }
 
 impl Phy {
-    /// Reset module
-    ///
-    /// This function is intended to be used between unit tests
-    #[doc(hidden)]
-    pub fn reset() {
-        crate::crit_sect::locked(|cs| {
-            ISR_DATA.borrow(cs).replace(None);
-        });
-    }
-
     /// Create new instance of the physical layer
+    ///
+    /// You probably want to create global instance by calling [`Phy::new_global_instance`](`crate::radio::Phy::new_global_instance`)
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
@@ -161,14 +159,54 @@ impl Phy {
             state: State::Idle,
         };
 
-        crate::crit_sect::locked(|cs| {
-            let prev_isr_data = ISR_DATA.borrow(cs).replace(Some(isr_data));
-            assert!(prev_isr_data.is_none());
-        });
+        let isr_data = Mutex::new(RefCell::new(isr_data));
 
-        Self {
-            isr_data: &ISR_DATA,
-        }
+        Self { isr_data }
+    }
+
+    fn get_global_instance_raw() -> &'static OnceCell<Phy> {
+        static PHY: OnceCell<Phy> = OnceCell::new();
+        &PHY
+    }
+
+    /// Set this Phy as global instance.
+    ///
+    /// Panics if global instance was already set.
+    pub fn set_as_global_instance(self) -> &'static Self {
+        Self::get_global_instance_raw()
+            .try_insert(self)
+            .expect("Global Phy already initialized")
+    }
+
+    /// Create new global instance.
+    ///
+    /// Panics if global instance was already set.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    ///   use nrf52840_hal::pac::Peripherals;
+    ///   use nrf_radio::radio::Phy;
+    ///
+    ///   let peripherals = Peripherals::take().unwrap();
+    ///
+    ///   let phy = Phy::new_global_instance(&peripherals.RADIO);
+    /// # }
+    /// ```
+    pub fn new_global_instance(radio: &RadioRegisterBlock) -> &'static Self {
+        Self::new(radio).set_as_global_instance()
+    }
+
+    /// Get global instance.
+    ///
+    /// Panics is global instance is not set.
+    pub fn get_global_instance() -> &'static Self {
+        Self::get_global_instance_raw()
+            .get()
+            .expect("Global Phy not initialized")
     }
 
     /// Helper function to get access to data accessible from ISR
@@ -176,8 +214,7 @@ impl Phy {
         where F: FnOnce(&mut IsrData) -> R
     {
         crate::crit_sect::locked(|cs| {
-            let isr_data_option = &mut self.isr_data.borrow(cs).borrow_mut();
-            let isr_data = &mut isr_data_option.as_mut().unwrap();
+            let isr_data = &mut self.isr_data.borrow(cs).borrow_mut();
             func(isr_data)
         })
     }
@@ -236,7 +273,7 @@ impl Phy {
     /// supported with channels from range 11-26.
     ///
     /// Returns:
-    /// * [`Ok(())`](core::result::Result::Ok) if channel is configured successfully 
+    /// * [`Ok(())`](core::result::Result::Ok) if channel is configured successfully
     /// * [`Err(Error::WouldBlock)`](Error::WouldBlock) if the transceiver is enabled
     /// * [`Err(Error::InvalidChannel)`](Error::InvalidChannel) if the requested channel is out of
     /// range for enabled radio protocol
@@ -430,7 +467,7 @@ impl Phy {
             match &i.state {
                 State::Idle => {
                     Phy::enter_rx(&rx_buffer, i);
-                    i.state = State::Rx(RxData { 
+                    i.state = State::Rx(RxData {
                         callback,
                         rx_buffer,
                     });
@@ -446,64 +483,69 @@ impl Phy {
 use nrf52840_hal::pac::interrupt;
 #[interrupt]
 fn RADIO() {
-    irq_handler();
+    // Can be optimized with get_unchecked for release build.
+    irq_handler(Phy::get_global_instance());
 }
 
-fn irq_handler() {
+fn irq_handler(phy: &Phy) {
     enum Callback {
-        None,
         Tx(TxCallback, Context),
         Rx(RxCallback, Result<RxOk, Error>),
     }
 
-    let mut callback = Callback::None;
-
-    crate::crit_sect::locked(|cs| {
-        //let mut r = ISR_DATA.borrow(cs).borrow_mut();
-        //let i = r.as_mut().unwrap();
-
-        let mut i = ISR_DATA.borrow(cs).replace(None).unwrap();
-
-        match i.state {
+    let callback = phy.use_isr_data(|i| {
+        let state = core::mem::replace(&mut i.state, State::Idle);
+        match state {
             State::Rx(rx_data) => {
-                if i.radio.events_crcok.read().events_crcok().bit_is_set() {
+                let callback = if i.radio.events_crcok.read().events_crcok().bit_is_set() {
                     i.radio.events_crcok.write(|w| w.events_crcok().clear_bit());
 
-                    callback = Callback::Rx(rx_data.callback, Ok(RxOk { frame: rx_data.rx_buffer }));
-                } else if i.radio.events_crcerror.read().events_crcerror().bit_is_set() {
-                    i.radio.events_crcerror.write(|w| w.events_crcerror().clear_bit());
+                    Callback::Rx(
+                        rx_data.callback,
+                        Ok(RxOk {
+                            frame: rx_data.rx_buffer,
+                        }),
+                    )
+                } else if i
+                    .radio
+                    .events_crcerror
+                    .read()
+                    .events_crcerror()
+                    .bit_is_set()
+                {
+                    i.radio
+                        .events_crcerror
+                        .write(|w| w.events_crcerror().clear_bit());
 
-                    callback = Callback::Rx(rx_data.callback, Err(Error::IncorrectCrc));
+                    Callback::Rx(rx_data.callback, Err(Error::IncorrectCrc))
                 } else {
                     panic!("Unexpected event received in Rx state");
-                }
+                };
 
-                i.state = State::Idle;
-                Phy::exit_rx(&mut i);
+                Phy::exit_rx(i);
+                callback
             }
 
             State::Tx(tx_data) => {
-                if i.radio.events_phyend.read().events_phyend().bit_is_set() {
-                    i.radio.events_phyend.write(|w| w.events_phyend().clear_bit());
+                let callback = if i.radio.events_phyend.read().events_phyend().bit_is_set() {
+                    i.radio
+                        .events_phyend
+                        .write(|w| w.events_phyend().clear_bit());
 
-                    callback = Callback::Tx(tx_data.callback, tx_data.context);
+                    Callback::Tx(tx_data.callback, tx_data.context)
                 } else {
                     panic!("Unexpected event received in Tx state");
-                }
+                };
 
-                i.state = State::Idle;
-                Phy::exit_tx(&mut i);
+                Phy::exit_tx(i);
+                callback
             }
 
             State::Idle => panic!("An event received in Idle state"),
         }
-
-        let temp_i = ISR_DATA.borrow(cs).replace(Some(i));
-        debug_assert!(temp_i.is_none());
     });
 
     match callback {
-        Callback::None => (),
         Callback::Rx(callback, result) => callback(result),
         Callback::Tx(callback, context) => callback(Ok(()), context),
     };
@@ -547,10 +589,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_configuring_802154() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -576,10 +616,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_tx() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
 
         let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
@@ -609,8 +647,10 @@ mod tests {
         assert!(radio_mock.intenset.read().phyend().bit_is_set());
 
         // Set IRQ event and trigger IRQ
-        radio_mock.events_phyend.write(|w| w.events_phyend().set_bit());
-        irq_handler();
+        radio_mock
+            .events_phyend
+            .write(|w| w.events_phyend().set_bit());
+        irq_handler(&phy);
 
         assert!(unsafe {CALLED});
         assert_eq!(unsafe {&RECEIVED_RESULT}, &Ok(()));
@@ -619,10 +659,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_enter_rx() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -651,10 +689,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_rx_correct_frame() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -671,17 +707,19 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe {CALLED});
-        
+
         // Set IRQ event and trigger IRQ
-        radio_mock.events_crcok.write(|w| w.events_crcok().set_bit());
-        irq_handler();
+        radio_mock
+            .events_crcok
+            .write(|w| w.events_crcok().set_bit());
+        irq_handler(&phy);
 
         assert!(unsafe {CALLED});
         unsafe {
             assert!(RECEIVED_RESULT.is_some());
             let received_option = RECEIVED_RESULT.replace(Err(Error::WouldBlock)).unwrap();
             assert!(received_option.is_ok());
-            assert_eq!(received_option.as_ref().unwrap().frame.as_ptr() as u32, 
+            assert_eq!(received_option.as_ref().unwrap().frame.as_ptr() as u32,
                        FRAME.as_ptr() as u32);
         }
         assert!(radio_mock.intenclr.read().crcok().bit_is_set());
@@ -689,10 +727,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_rx_frame_with_incorrect_crc() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -709,10 +745,12 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe {CALLED});
-        
+
         // Set IRQ event and trigger IRQ
-        radio_mock.events_crcerror.write(|w| w.events_crcerror().set_bit());
-        irq_handler();
+        radio_mock
+            .events_crcerror
+            .write(|w| w.events_crcerror().set_bit());
+        irq_handler(&phy);
 
         assert!(unsafe {CALLED});
         assert_eq!(unsafe {&RECEIVED_RESULT}, &Some(Err(Error::IncorrectCrc)));
@@ -721,10 +759,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_tx_request_in_rx_state_returns_error() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -760,10 +796,8 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_802154_rx_request_during_tx_returns_error() {
         let radio_mock = RadioMock::new();
-        Phy::reset();
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
@@ -798,4 +832,47 @@ mod tests {
         assert!(! unsafe {TX_CALLED});
     }
 
+    #[test]
+    #[serial]
+    fn test_802154_global_instance() {
+        let radio_mock = RadioMock::new();
+        let phy = Phy::new_global_instance(&radio_mock);
+        phy.configure_802154();
+
+        static mut CALLED: bool = false;
+        static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
+        static mut FRAME: [u8; 128] = [0; 128];
+
+        fn callback(result: Result<RxOk, Error>) {
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
+        }
+
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { CALLED });
+
+        // Set IRQ event and trigger IRQ
+        radio_mock
+            .events_crcok
+            .write(|w| w.events_crcok().set_bit());
+        irq_handler(Phy::get_global_instance());
+
+        assert!(unsafe { CALLED });
+        unsafe {
+            assert!(RECEIVED_RESULT.is_some());
+            let received_option = RECEIVED_RESULT.replace(Err(Error::WouldBlock)).unwrap();
+            assert!(received_option.is_ok());
+            assert_eq!(
+                received_option.as_ref().unwrap().frame.as_ptr() as u32,
+                FRAME.as_ptr() as u32
+            );
+        }
+        assert!(radio_mock.intenclr.read().crcok().bit_is_set());
+        assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
+    }
 }
