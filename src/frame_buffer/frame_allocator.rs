@@ -1,12 +1,50 @@
-use crate::error::Error;
 use super::frame_buffer::FrameBuffer;
+use crate::error::Error;
+use crate::frame_buffer::single_frame_allocator::SingleFrameAllocator;
+
+pub enum FrameAllocator<'a> {
+    #[cfg(test)]
+    DummyAllocator(&'a DummyAllocator),
+    SingleFrameAllocator(&'a SingleFrameAllocator),
+}
+
+impl<'a> GetFrame for FrameAllocator<'a> {
+    fn get_frame(&self) -> Result<FrameBuffer, Error> {
+        match self {
+            #[cfg(test)]
+            FrameAllocator::DummyAllocator(allocator) => allocator.get_frame(),
+            FrameAllocator::SingleFrameAllocator(allocator) => allocator.get_frame(),
+        }
+    }
+}
+
+impl<'a> Free for FrameAllocator<'a> {
+    fn free(&self) {
+        match self {
+            #[cfg(test)]
+            FrameAllocator::DummyAllocator(allocator) => allocator.free(),
+            FrameAllocator::SingleFrameAllocator(allocator) => allocator.free(),
+        }
+    }
+}
 
 #[cfg(test)]
-use mockall::*;
+pub struct DummyAllocator;
+
+#[cfg(test)]
+impl GetFrame for DummyAllocator {
+    fn get_frame(&self) -> Result<FrameBuffer, Error> {
+        unimplemented!()
+    }
+}
+
+#[cfg(test)]
+impl Free for DummyAllocator {
+    fn free(&self) {}
+}
 
 /// Trait of any frame buffers allocator for radio frames
-#[cfg_attr(test, automock)]
-pub trait FrameAllocator {
+pub trait GetFrame {
     // TODO: consider size of the requested frame
     /// Allocates a single frame
     ///
@@ -16,7 +54,7 @@ pub trait FrameAllocator {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
-    ///   use nrf_radio::frame_buffer::frame_allocator::FrameAllocator; // Import trait
+    ///   use nrf_radio::frame_buffer::frame_allocator::GetFrame; // Import trait
     ///   use nrf_radio::frame_buffer::single_frame_allocator::SingleFrameAllocator;
     ///
     ///   let allocator = SingleFrameAllocator::new();
@@ -39,11 +77,15 @@ pub trait FrameAllocator {
     fn get_frame(&self) -> Result<FrameBuffer, Error>;
 }
 
+pub(super) trait Free {
+    fn free(&self);
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
 
-    fn allocate_number_of_frames<FA: FrameAllocator>(allocator: &FA, i: usize) -> Vec<FrameBuffer> {
+    fn allocate_number_of_frames<FA: GetFrame>(allocator: &FA, i: usize) -> Vec<FrameBuffer> {
         let mut frames = Vec::new();
 
         for _ in 0..i {
@@ -55,15 +97,18 @@ pub mod tests {
         frames
     }
 
-    fn allocate_all_frames<FA: FrameAllocator>(allocator: &FA, num_bufs: usize) -> Vec<FrameBuffer> {
+    fn allocate_all_frames<FA: GetFrame>(allocator: &FA, num_bufs: usize) -> Vec<FrameBuffer> {
         allocate_number_of_frames(allocator, num_bufs)
     }
 
-    fn allocate_all_frames_but_one<FA: FrameAllocator>(allocator: &FA, num_bufs: usize) -> Vec<FrameBuffer> {
+    fn allocate_all_frames_but_one<FA: GetFrame>(
+        allocator: &FA,
+        num_bufs: usize,
+    ) -> Vec<FrameBuffer> {
         allocate_number_of_frames(allocator, num_bufs - 1)
     }
 
-    pub fn test_body_allocate_a_frame<FA: FrameAllocator>(allocator: &FA) {
+    pub fn test_body_allocate_a_frame<FA: GetFrame>(allocator: &FA) {
         let frame = allocator.get_frame();
         assert!(frame.is_ok());
 
@@ -73,7 +118,10 @@ pub mod tests {
         }
     }
 
-    pub fn test_body_allocate_more_frames_than_available<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocate_more_frames_than_available<FA: GetFrame>(
+        allocator: &FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames(allocator, num_available_frames);
 
         let frame = allocator.get_frame();
@@ -81,7 +129,10 @@ pub mod tests {
         // TODO: Verify which error
     }
 
-    pub fn test_body_allocated_frame_stored_in_static_variable<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocated_frame_stored_in_static_variable<FA: GetFrame>(
+        allocator: &'static FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);
 
         static mut STATIC_FRAME: Option<FrameBuffer> = None;
@@ -90,14 +141,17 @@ pub mod tests {
             let frame = allocator.get_frame();
             assert!(frame.is_ok());
             let frame = Some(frame.unwrap());
-            unsafe {STATIC_FRAME = frame};
+            unsafe { STATIC_FRAME = frame };
         }
 
         let frame = allocator.get_frame();
         assert!(frame.is_err());
     }
 
-    pub fn test_body_allocated_frame_dropped_after_released_from_static_variable<FA: FrameAllocator>(allocator: &FA, num_available_frames: usize) {
+    pub fn test_body_allocated_frame_dropped_after_released_from_static_variable<FA: GetFrame>(
+        allocator: &'static FA,
+        num_available_frames: usize,
+    ) {
         let _frames = allocate_all_frames_but_one(allocator, num_available_frames);
 
         static mut STATIC_FRAME: Option<FrameBuffer> = None;
@@ -106,10 +160,10 @@ pub mod tests {
             let frame = allocator.get_frame();
             assert!(frame.is_ok());
             let frame = Some(frame.unwrap());
-            unsafe {STATIC_FRAME = frame};
+            unsafe { STATIC_FRAME = frame };
         }
 
-        unsafe {STATIC_FRAME = None};
+        unsafe { STATIC_FRAME = None };
 
         let frame = allocator.get_frame();
         assert!(frame.is_ok());
