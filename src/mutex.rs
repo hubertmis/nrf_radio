@@ -1,5 +1,6 @@
 use crate::crit_sect::CriticalSection;
 
+#[derive(Debug)]
 pub struct Mutex<T> {
     inner: T,
 }
