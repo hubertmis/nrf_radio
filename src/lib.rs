@@ -9,6 +9,7 @@
 //! is designed to be extensible for other protocols and other SoCs.
 
 mod crit_sect;
+pub mod ieee802154;
 mod mutex;
 
 /// Defines errors reported by this crate
