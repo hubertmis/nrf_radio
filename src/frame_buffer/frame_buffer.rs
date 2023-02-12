@@ -5,6 +5,10 @@ use core::ops::{Deref, DerefMut};
 pub type DropFunction = fn(&mut FrameBuffer, DropMetadata);
 pub type DropMetadata = &'static (dyn Any + Send + Sync);
 
+// TODO: Implement MutFrameBuffer as a separated type?
+// User should be able to create frames to transmit using an immutable buffer. But maybe such
+// buffer shall be copied to mutable `FrameBuffer`?
+
 /// Buffer representing a radio frame data and buffer management metadata
 ///
 /// This buffer is opaque for radio protocols. It can contain data necessary for any protocol.
@@ -13,13 +17,13 @@ pub type DropMetadata = &'static (dyn Any + Send + Sync);
 /// Buffers are released in their destructor methods provided by the buffer allocator.
 ///
 /// [`FrameBuffer`] is a smart pointer dereferencing a bytes slice.
-pub struct FrameBuffer {
-    frame: &'static mut [u8],
+pub struct FrameBuffer<'a> {
+    frame: &'a mut [u8],
     drop_fn: Option<DropFunction>,
     drop_md: DropMetadata,
 }
 
-impl FrameBuffer {
+impl<'a> FrameBuffer<'a> {
     /// Creates a new buffer
     ///
     /// ---
@@ -36,11 +40,7 @@ impl FrameBuffer {
     /// Releasing the memory slice for other use is indicated by the `FrameBuffer` by calling the
     /// `drop_fn` function passing a reference to the buffer being freed and a caller-defined
     /// `drop_md` reference.
-    pub fn new(
-        frame: &'static mut [u8],
-        drop_fn: Option<DropFunction>,
-        drop_md: DropMetadata,
-    ) -> Self {
+    pub fn new(frame: &'a mut [u8], drop_fn: Option<DropFunction>, drop_md: DropMetadata) -> Self {
         Self {
             frame,
             drop_fn,
@@ -49,7 +49,7 @@ impl FrameBuffer {
     }
 }
 
-impl Debug for FrameBuffer {
+impl Debug for FrameBuffer<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("FrameBuffer")
             .field("frame", &self.frame)
@@ -57,7 +57,7 @@ impl Debug for FrameBuffer {
     }
 }
 
-impl Deref for FrameBuffer {
+impl Deref for FrameBuffer<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -65,13 +65,13 @@ impl Deref for FrameBuffer {
     }
 }
 
-impl DerefMut for FrameBuffer {
+impl DerefMut for FrameBuffer<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.frame
     }
 }
 
-impl Drop for FrameBuffer {
+impl Drop for FrameBuffer<'_> {
     fn drop(&mut self) {
         if let Some(drop_fn) = self.drop_fn {
             drop_fn(self, self.drop_md)
@@ -79,14 +79,14 @@ impl Drop for FrameBuffer {
     }
 }
 
-impl PartialEq for FrameBuffer {
+impl PartialEq for FrameBuffer<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.frame == other.frame
     }
 }
 
 // TODO: conditional on features
-impl defmt::Format for FrameBuffer {
+impl defmt::Format for FrameBuffer<'_> {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "Frame({:x})", self.frame);
     }
