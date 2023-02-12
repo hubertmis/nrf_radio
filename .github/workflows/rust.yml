@@ -47,3 +47,5 @@ jobs:
         args: >
           --all-features
           --no-deps
+          --
+          -D warnings
