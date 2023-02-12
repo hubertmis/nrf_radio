@@ -73,8 +73,8 @@ impl SingleFrameAllocator {
             assert!(prev_frame_allocator.is_none());
         });
 
-        let phantom_allocator = Self { is_allocated: true };
-        phantom_allocator
+        // create a phantom allocator
+        Self { is_allocated: true }
     }
 
     /// Releases an allocated frame
