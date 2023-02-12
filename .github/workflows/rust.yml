@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  test:
 
     runs-on: ubuntu-latest
 
@@ -20,3 +20,17 @@ jobs:
       run: cargo fmt --verbose --check
     - name: Run tests
       run: cargo test --verbose
+
+  doc:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Generate docs
+      run: cargo doc --no-deps
+    - name: Archive generated docs
+      uses: actions/upload-artifact@v3
+      with:
+        name: docs
+        path: target/doc/
