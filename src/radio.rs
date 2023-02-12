@@ -4,7 +4,7 @@ use core::any::Any;
 use core::cell::RefCell;
 use core::ops::Deref;
 
-use crate::frame_buffer::frame_buffer::FrameBuffer;
+use crate::frm_mem_mng::frame_buffer::FrameBuffer;
 
 // Port to nRF52840
 use nrf52840_hal::pac::radio;
@@ -416,8 +416,8 @@ impl Phy {
     /// use nrf52840_hal::pac::Peripherals;
     /// use nrf_radio::radio::{Phy, RxOk};
     /// use nrf_radio::error::Error;
-    /// use nrf_radio::frame_buffer::frame_allocator::FrameAllocator;
-    /// use nrf_radio::frame_buffer::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
     ///
     /// fn rx_callback(result: Result<RxOk, Error>) {
     ///   match result {

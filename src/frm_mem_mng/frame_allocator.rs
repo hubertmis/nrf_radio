@@ -16,8 +16,8 @@ pub trait FrameAllocator {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
-    ///   use nrf_radio::frame_buffer::frame_allocator::FrameAllocator; // Import trait
-    ///   use nrf_radio::frame_buffer::single_frame_allocator::SingleFrameAllocator;
+    ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator; // Import trait
+    ///   use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
     ///
     ///   let allocator = SingleFrameAllocator::new();
     ///

@@ -12,7 +12,7 @@ mod mutex;
 pub mod error;
 
 /// Management of radio frames' buffers
-pub mod frame_buffer;
+pub mod frm_mem_mng;
 
 /// Radio physical layer implementation for Nordic nRF SoCs.
 ///
