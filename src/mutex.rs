@@ -4,11 +4,9 @@ pub struct Mutex<T> {
     inner: T,
 }
 
-impl <T> Mutex<T> {
+impl<T> Mutex<T> {
     pub const fn new(value: T) -> Mutex<T> {
-        Self {
-            inner: value,
-        }
+        Self { inner: value }
     }
 
     pub fn borrow<'cs>(&'cs self, _cs: &'cs CriticalSection) -> &'cs T {

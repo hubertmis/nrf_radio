@@ -5,7 +5,7 @@ pub struct CriticalSection<'a> {
     _internal_cs: &'a cortex_m::interrupt::CriticalSection,
 }
 
-impl <'a> CriticalSection<'a> {
+impl<'a> CriticalSection<'a> {
     fn new(internal_cs: &'a cortex_m::interrupt::CriticalSection) -> Self {
         Self {
             _internal_cs: internal_cs,
@@ -15,7 +15,7 @@ impl <'a> CriticalSection<'a> {
 
 pub fn locked<F, R>(f: F) -> R
 where
-    F: FnOnce(&CriticalSection) -> R
+    F: FnOnce(&CriticalSection) -> R,
 {
     // TODO: instead of disabling all interrupts, disable only relevant
     cortex_m::interrupt::free(|cs| f(&CriticalSection::new(cs)))

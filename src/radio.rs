@@ -1,8 +1,8 @@
+use crate::error::Error;
+use crate::mutex::Mutex;
 use core::any::Any;
 use core::cell::RefCell;
 use core::ops::Deref;
-use crate::error::Error;
-use crate::mutex::Mutex;
 
 use crate::frame_buffer::frame_buffer::FrameBuffer;
 
@@ -21,9 +21,7 @@ struct RadioPeriphWrapper {
 }
 impl RadioPeriphWrapper {
     pub fn new(radio: &RadioRegisterBlock) -> Self {
-        RadioPeriphWrapper {
-            ptr: radio,
-        }
+        RadioPeriphWrapper { ptr: radio }
     }
 }
 impl Deref for RadioPeriphWrapper {
@@ -73,7 +71,7 @@ struct RxData {
 enum State {
     // In Idle state RADIO is being disabled (RXDISABLE, TXDISABLE) or already disabled (DISABLED).
     // The INTEN register is cleared. The SHORTS, PACKETPTR, EVENTS_ are undefined (expected to be
-    // overriden when entering the next state). 
+    // overriden when entering the next state).
     Idle,
     Tx(TxData),
     Rx(RxData),
@@ -96,7 +94,7 @@ static ISR_DATA: Mutex<RefCell<Option<IsrData>>> = Mutex::new(RefCell::new(None)
 #[doc(hidden)]
 #[macro_export]
 macro_rules! missing_test_fns {
-    ()=>{
+    () => {
         #[no_mangle]
         pub extern "C" fn __primask_r() {}
 
@@ -173,7 +171,8 @@ impl Phy {
 
     /// Helper function to get access to data accessible from ISR
     fn use_isr_data<F, R>(&self, func: F) -> R
-        where F: FnOnce(&mut IsrData) -> R
+    where
+        F: FnOnce(&mut IsrData) -> R,
     {
         crate::crit_sect::locked(|cs| {
             let isr_data_option = &mut self.isr_data.borrow(cs).borrow_mut();
@@ -200,22 +199,36 @@ impl Phy {
     /// ```
     pub fn configure_802154(&self) {
         self.use_isr_data(|i| {
-            i.radio.mode.write(|w| w.mode().variant(radio::mode::MODE_A::IEEE802154_250KBIT));
-            i.radio.pcnf0.write(|w| w.lflen().variant(8)
-                                     .plen().variant(radio::pcnf0::PLEN_A::_32BIT_ZERO)
-                                     .crcinc().variant(radio::pcnf0::CRCINC_A::INCLUDE)
-                               );
-            i.radio.pcnf1.write(|w| w.maxlen().variant(127));  // TODO: remove magic numbers
-            i.radio.modecnf0.write(|w| w.ru().variant(radio::modecnf0::RU_A::FAST));
-            i.radio.crccnf.write(|w| w.len().variant(radio::crccnf::LEN_A::TWO)
-                                      .skipaddr().variant(radio::crccnf::SKIPADDR_A::IEEE802154)
-                                );
+            i.radio
+                .mode
+                .write(|w| w.mode().variant(radio::mode::MODE_A::IEEE802154_250KBIT));
+            i.radio.pcnf0.write(|w| {
+                w.lflen()
+                    .variant(8)
+                    .plen()
+                    .variant(radio::pcnf0::PLEN_A::_32BIT_ZERO)
+                    .crcinc()
+                    .variant(radio::pcnf0::CRCINC_A::INCLUDE)
+            });
+            i.radio.pcnf1.write(|w| w.maxlen().variant(127)); // TODO: remove magic numbers
+            i.radio
+                .modecnf0
+                .write(|w| w.ru().variant(radio::modecnf0::RU_A::FAST));
+            i.radio.crccnf.write(|w| {
+                w.len()
+                    .variant(radio::crccnf::LEN_A::TWO)
+                    .skipaddr()
+                    .variant(radio::crccnf::SKIPADDR_A::IEEE802154)
+            });
             i.radio.crcpoly.write(|w| w.crcpoly().variant(0x011021)); // TODO: remove magic numbers
 
             // TODO: move CCA configuration out
-            i.radio.ccactrl.write(|w| w.ccamode().variant(radio::ccactrl::CCAMODE_A::ED_MODE)
-                                       .ccaedthres().variant(20)
-                                 );
+            i.radio.ccactrl.write(|w| {
+                w.ccamode()
+                    .variant(radio::ccactrl::CCAMODE_A::ED_MODE)
+                    .ccaedthres()
+                    .variant(20)
+            });
         });
 
         // TODO: enable IRQs?
@@ -236,7 +249,7 @@ impl Phy {
     /// supported with channels from range 11-26.
     ///
     /// Returns:
-    /// * [`Ok(())`](core::result::Result::Ok) if channel is configured successfully 
+    /// * [`Ok(())`](core::result::Result::Ok) if channel is configured successfully
     /// * [`Err(Error::WouldBlock)`](Error::WouldBlock) if the transceiver is enabled
     /// * [`Err(Error::InvalidChannel)`](Error::InvalidChannel) if the requested channel is out of
     /// range for enabled radio protocol
@@ -260,31 +273,36 @@ impl Phy {
     /// }
     /// ```
     pub fn set_channel(&self, channel: u8) -> Result<(), Error> {
-        self.use_isr_data(|i| {
-            match &i.state {
-                State::Idle => {
-                    let frequency = (Phy::get_802154_frequency_from_channel(channel)? - 2400)
-                        .try_into().unwrap();
-                    i.radio.frequency.write(|w| w.frequency().variant(frequency));
-                    Ok(())
-                }
-                _ => Err(Error::WouldBlock),
+        self.use_isr_data(|i| match &i.state {
+            State::Idle => {
+                let frequency = (Phy::get_802154_frequency_from_channel(channel)? - 2400)
+                    .try_into()
+                    .unwrap();
+                i.radio
+                    .frequency
+                    .write(|w| w.frequency().variant(frequency));
+                Ok(())
             }
+            _ => Err(Error::WouldBlock),
         })
     }
 
     /// Helper function to set PACKETPTR register to point to passed buffer
     fn set_packetptr(buffer: &[u8], i: &mut IsrData) {
-        i.radio.packetptr.write(|w| w.packetptr().variant(buffer.as_ptr() as u32));
+        i.radio
+            .packetptr
+            .write(|w| w.packetptr().variant(buffer.as_ptr() as u32));
     }
 
     /// FSM procedure on entering TX state
     fn enter_tx(frame: &[u8], i: &mut IsrData) {
         Phy::set_packetptr(frame, i);
-        i.radio.shorts.write(|w| w.txready_start().set_bit()
-                                  .phyend_disable().set_bit()
-                            );
-        i.radio.events_phyend.write(|w| w.events_phyend().clear_bit());
+        i.radio
+            .shorts
+            .write(|w| w.txready_start().set_bit().phyend_disable().set_bit());
+        i.radio
+            .events_phyend
+            .write(|w| w.events_phyend().clear_bit());
         i.radio.tasks_txen.write(|w| w.tasks_txen().set_bit());
         i.radio.intenset.write(|w| w.phyend().set_bit());
     }
@@ -340,7 +358,7 @@ impl Phy {
         self.use_isr_data(|i| {
             result = match &i.state {
                 State::Idle => {
-                    i.state = State::Tx(TxData { callback, context } );
+                    i.state = State::Tx(TxData { callback, context });
                     Phy::enter_tx(frame, i);
                     Ok(())
                 }
@@ -354,22 +372,24 @@ impl Phy {
     /// FSM procedure on entering RX state
     fn enter_rx(buffer: &[u8], i: &mut IsrData) {
         Phy::set_packetptr(buffer, i);
-        i.radio.shorts.write(|w| w.rxready_start().set_bit()
-                                  .end_disable().set_bit()
-                            );
+        i.radio
+            .shorts
+            .write(|w| w.rxready_start().set_bit().end_disable().set_bit());
         i.radio.events_crcok.write(|w| w.events_crcok().clear_bit());
-        i.radio.events_crcerror.write(|w| w.events_crcerror().clear_bit());
+        i.radio
+            .events_crcerror
+            .write(|w| w.events_crcerror().clear_bit());
         i.radio.tasks_rxen.write(|w| w.tasks_rxen().set_bit());
-        i.radio.intenset.write(|w| w.crcok().set_bit()
-                                    .crcerror().set_bit()
-                              );
+        i.radio
+            .intenset
+            .write(|w| w.crcok().set_bit().crcerror().set_bit());
     }
 
     /// FSM procedure on exitting RX state
     fn exit_rx(i: &mut IsrData) {
-        i.radio.intenclr.write(|w| w.crcok().set_bit()
-                                    .crcerror().set_bit()
-                              );
+        i.radio
+            .intenclr
+            .write(|w| w.crcok().set_bit().crcerror().set_bit());
     }
 
     /// Enables receiver
@@ -422,22 +442,21 @@ impl Phy {
     /// }
     /// ```
     pub fn rx(&self, rx_buffer: FrameBuffer, callback: RxCallback) -> Result<(), Error> {
-        if rx_buffer.len() <= 127 { // TODO: remove magic number
+        if rx_buffer.len() <= 127 {
+            // TODO: remove magic number
             return Err(Error::TooSmallBuffer);
         }
 
-        self.use_isr_data(|i| {
-            match &i.state {
-                State::Idle => {
-                    Phy::enter_rx(&rx_buffer, i);
-                    i.state = State::Rx(RxData { 
-                        callback,
-                        rx_buffer,
-                    });
-                    Ok(())
-                },
-                _ => Err(Error::WouldBlock)
+        self.use_isr_data(|i| match &i.state {
+            State::Idle => {
+                Phy::enter_rx(&rx_buffer, i);
+                i.state = State::Rx(RxData {
+                    callback,
+                    rx_buffer,
+                });
+                Ok(())
             }
+            _ => Err(Error::WouldBlock),
         })
     }
 }
@@ -469,9 +488,22 @@ fn irq_handler() {
                 if i.radio.events_crcok.read().events_crcok().bit_is_set() {
                     i.radio.events_crcok.write(|w| w.events_crcok().clear_bit());
 
-                    callback = Callback::Rx(rx_data.callback, Ok(RxOk { frame: rx_data.rx_buffer }));
-                } else if i.radio.events_crcerror.read().events_crcerror().bit_is_set() {
-                    i.radio.events_crcerror.write(|w| w.events_crcerror().clear_bit());
+                    callback = Callback::Rx(
+                        rx_data.callback,
+                        Ok(RxOk {
+                            frame: rx_data.rx_buffer,
+                        }),
+                    );
+                } else if i
+                    .radio
+                    .events_crcerror
+                    .read()
+                    .events_crcerror()
+                    .bit_is_set()
+                {
+                    i.radio
+                        .events_crcerror
+                        .write(|w| w.events_crcerror().clear_bit());
 
                     callback = Callback::Rx(rx_data.callback, Err(Error::IncorrectCrc));
                 } else {
@@ -484,7 +516,9 @@ fn irq_handler() {
 
             State::Tx(tx_data) => {
                 if i.radio.events_phyend.read().events_phyend().bit_is_set() {
-                    i.radio.events_phyend.write(|w| w.events_phyend().clear_bit());
+                    i.radio
+                        .events_phyend
+                        .write(|w| w.events_phyend().clear_bit());
 
                     callback = Callback::Tx(tx_data.callback, tx_data.context);
                 } else {
@@ -524,9 +558,7 @@ mod tests {
 
     impl RadioMock {
         pub fn new() -> Self {
-            Self {
-                memory: [0; 4096],
-            }
+            Self { memory: [0; 4096] }
         }
     }
 
@@ -534,16 +566,12 @@ mod tests {
         type Target = RadioRegisterBlock;
         fn deref(&self) -> &Self::Target {
             let ptr: *const RadioRegisterBlock = self.memory.as_ptr() as *const _;
-            unsafe {&*ptr}
+            unsafe { &*ptr }
         }
     }
 
     fn create_frame_buffer_from_static_buffer(static_buffer: &'static mut [u8]) -> FrameBuffer {
-        FrameBuffer::new(
-            static_buffer,
-            None,
-            &None::<usize>,
-        )
+        FrameBuffer::new(static_buffer, None, &None::<usize>)
     }
 
     #[test]
@@ -554,23 +582,50 @@ mod tests {
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
-        assert_eq!(radio_mock.mode.read().mode().variant().unwrap(), radio::mode::MODE_A::IEEE802154_250KBIT);
+        assert_eq!(
+            radio_mock.mode.read().mode().variant().unwrap(),
+            radio::mode::MODE_A::IEEE802154_250KBIT
+        );
         assert_eq!(radio_mock.pcnf0.read().lflen().bits(), 8);
         assert_eq!(radio_mock.pcnf0.read().s0len().bit(), false);
         assert_eq!(radio_mock.pcnf0.read().s1len().bits(), 0);
         assert_eq!(radio_mock.pcnf0.read().cilen().bits(), 0);
-        assert_eq!(radio_mock.pcnf0.read().plen().variant(), radio::pcnf0::PLEN_A::_32BIT_ZERO);
-        assert_eq!(radio_mock.pcnf0.read().crcinc().variant(), radio::pcnf0::CRCINC_A::INCLUDE);
+        assert_eq!(
+            radio_mock.pcnf0.read().plen().variant(),
+            radio::pcnf0::PLEN_A::_32BIT_ZERO
+        );
+        assert_eq!(
+            radio_mock.pcnf0.read().crcinc().variant(),
+            radio::pcnf0::CRCINC_A::INCLUDE
+        );
         assert_eq!(radio_mock.pcnf0.read().termlen().bits(), 0);
         assert_eq!(radio_mock.pcnf1.read().maxlen().bits(), 127);
         assert_eq!(radio_mock.pcnf1.read().statlen().bits(), 0);
         assert_eq!(radio_mock.pcnf1.read().balen().bits(), 0);
-        assert_eq!(radio_mock.pcnf1.read().endian().variant(), radio::pcnf1::ENDIAN_A::LITTLE);
-        assert_eq!(radio_mock.pcnf1.read().whiteen().variant(), radio::pcnf1::WHITEEN_A::DISABLED);
-        assert_eq!(radio_mock.modecnf0.read().ru().variant(), radio::modecnf0::RU_A::FAST);
-        assert_eq!(radio_mock.modecnf0.read().dtx().variant().unwrap(), radio::modecnf0::DTX_A::CENTER);
-        assert_eq!(radio_mock.crccnf.read().len().variant(), radio::crccnf::LEN_A::TWO);
-        assert_eq!(radio_mock.crccnf.read().skipaddr().variant().unwrap(), radio::crccnf::SKIPADDR_A::IEEE802154);
+        assert_eq!(
+            radio_mock.pcnf1.read().endian().variant(),
+            radio::pcnf1::ENDIAN_A::LITTLE
+        );
+        assert_eq!(
+            radio_mock.pcnf1.read().whiteen().variant(),
+            radio::pcnf1::WHITEEN_A::DISABLED
+        );
+        assert_eq!(
+            radio_mock.modecnf0.read().ru().variant(),
+            radio::modecnf0::RU_A::FAST
+        );
+        assert_eq!(
+            radio_mock.modecnf0.read().dtx().variant().unwrap(),
+            radio::modecnf0::DTX_A::CENTER
+        );
+        assert_eq!(
+            radio_mock.crccnf.read().len().variant(),
+            radio::crccnf::LEN_A::TWO
+        );
+        assert_eq!(
+            radio_mock.crccnf.read().skipaddr().variant().unwrap(),
+            radio::crccnf::SKIPADDR_A::IEEE802154
+        );
         assert_eq!(radio_mock.crcpoly.read().crcpoly().bits(), 0x011021);
         assert_eq!(radio_mock.crcinit.read().crcinit().bits(), 0);
     }
@@ -582,39 +637,47 @@ mod tests {
         Phy::reset();
         let phy = Phy::new(&radio_mock);
 
-        let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
-                                   0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let frame: [u8; 17] = [
+            16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07,
+        ];
 
         static mut CALLED: bool = false;
         static mut RECEIVED_RESULT: Result<(), Error> = Err(Error::IncorrectCrc);
         static mut RECEIVED_CONTEXT: &Option<u8> = &Some(0);
 
         fn callback(result: Result<(), Error>, context: Context) {
-            unsafe {CALLED = true};
-            unsafe {RECEIVED_RESULT = result};
-            unsafe {RECEIVED_CONTEXT = context.downcast_ref().unwrap()};
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = result };
+            unsafe { RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
         }
 
         phy.configure_802154();
         let result = phy.tx(&frame, callback, &None::<u8>);
 
         assert_eq!(result, Ok(()));
-        assert!(!unsafe {CALLED});
+        assert!(!unsafe { CALLED });
 
         // Check peripheral configuration before IRQ
         assert_eq!(radio_mock.packetptr.read().bits(), frame.as_ptr() as u32);
         assert!(radio_mock.shorts.read().txready_start().bit_is_set());
         assert!(radio_mock.shorts.read().phyend_disable().bit_is_set());
-        assert!(radio_mock.events_phyend.read().events_phyend().bit_is_clear());
+        assert!(radio_mock
+            .events_phyend
+            .read()
+            .events_phyend()
+            .bit_is_clear());
         assert!(radio_mock.intenset.read().phyend().bit_is_set());
 
         // Set IRQ event and trigger IRQ
-        radio_mock.events_phyend.write(|w| w.events_phyend().set_bit());
+        radio_mock
+            .events_phyend
+            .write(|w| w.events_phyend().set_bit());
         irq_handler();
 
-        assert!(unsafe {CALLED});
-        assert_eq!(unsafe {&RECEIVED_RESULT}, &Ok(()));
-        assert_eq!(unsafe {RECEIVED_CONTEXT}, &None::<u8>); // TODO check address instead of value
+        assert!(unsafe { CALLED });
+        assert_eq!(unsafe { &RECEIVED_RESULT }, &Ok(()));
+        assert_eq!(unsafe { RECEIVED_CONTEXT }, &None::<u8>); // TODO check address instead of value
         assert!(radio_mock.intenclr.read().phyend().bit_is_set());
     }
 
@@ -630,24 +693,34 @@ mod tests {
         static mut FRAME: [u8; 128] = [0; 128];
 
         fn callback(_result: Result<RxOk, Error>) {
-            unsafe {CALLED = true};
+            unsafe { CALLED = true };
         }
 
-        let result = phy.rx(create_frame_buffer_from_static_buffer(unsafe {&mut FRAME}), callback);
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+        );
 
         assert_eq!(result, Ok(()));
-        assert!(!unsafe {CALLED});
+        assert!(!unsafe { CALLED });
 
         // TODO check bits that should be clear? Can I easily check "all other bits"?
         assert!(radio_mock.shorts.read().rxready_start().bit_is_set());
         assert!(radio_mock.shorts.read().end_disable().bit_is_set());
         assert!(radio_mock.events_crcok.read().events_crcok().bit_is_clear());
-        assert!(radio_mock.events_crcerror.read().events_crcerror().bit_is_clear());
+        assert!(radio_mock
+            .events_crcerror
+            .read()
+            .events_crcerror()
+            .bit_is_clear());
         assert!(radio_mock.intenset.read().crcok().bit_is_set());
         assert!(radio_mock.intenset.read().crcerror().bit_is_set());
-        assert_eq!(radio_mock.packetptr.read().bits(), unsafe {FRAME.as_ptr()} as u32);
+        assert_eq!(
+            radio_mock.packetptr.read().bits(),
+            unsafe { FRAME.as_ptr() } as u32
+        );
 
-        assert!(!unsafe {CALLED});
+        assert!(!unsafe { CALLED });
     }
 
     #[test]
@@ -663,26 +736,33 @@ mod tests {
         static mut FRAME: [u8; 128] = [0; 128];
 
         fn callback(result: Result<RxOk, Error>) {
-            unsafe {CALLED = true};
-            unsafe {RECEIVED_RESULT = Some(result)};
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
         }
 
-        let result = phy.rx(create_frame_buffer_from_static_buffer(unsafe {&mut FRAME}), callback);
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+        );
 
         assert_eq!(result, Ok(()));
-        assert!(!unsafe {CALLED});
-        
+        assert!(!unsafe { CALLED });
+
         // Set IRQ event and trigger IRQ
-        radio_mock.events_crcok.write(|w| w.events_crcok().set_bit());
+        radio_mock
+            .events_crcok
+            .write(|w| w.events_crcok().set_bit());
         irq_handler();
 
-        assert!(unsafe {CALLED});
+        assert!(unsafe { CALLED });
         unsafe {
             assert!(RECEIVED_RESULT.is_some());
             let received_option = RECEIVED_RESULT.replace(Err(Error::WouldBlock)).unwrap();
             assert!(received_option.is_ok());
-            assert_eq!(received_option.as_ref().unwrap().frame.as_ptr() as u32, 
-                       FRAME.as_ptr() as u32);
+            assert_eq!(
+                received_option.as_ref().unwrap().frame.as_ptr() as u32,
+                FRAME.as_ptr() as u32
+            );
         }
         assert!(radio_mock.intenclr.read().crcok().bit_is_set());
         assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
@@ -701,21 +781,26 @@ mod tests {
         static mut FRAME: [u8; 128] = [0; 128];
 
         fn callback(result: Result<RxOk, Error>) {
-            unsafe {CALLED = true};
-            unsafe {RECEIVED_RESULT = Some(result)};
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
         }
 
-        let result = phy.rx(create_frame_buffer_from_static_buffer(unsafe {&mut FRAME}), callback);
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+        );
 
         assert_eq!(result, Ok(()));
-        assert!(!unsafe {CALLED});
-        
+        assert!(!unsafe { CALLED });
+
         // Set IRQ event and trigger IRQ
-        radio_mock.events_crcerror.write(|w| w.events_crcerror().set_bit());
+        radio_mock
+            .events_crcerror
+            .write(|w| w.events_crcerror().set_bit());
         irq_handler();
 
-        assert!(unsafe {CALLED});
-        assert_eq!(unsafe {&RECEIVED_RESULT}, &Some(Err(Error::IncorrectCrc)));
+        assert!(unsafe { CALLED });
+        assert_eq!(unsafe { &RECEIVED_RESULT }, &Some(Err(Error::IncorrectCrc)));
         assert!(radio_mock.intenclr.read().crcok().bit_is_set());
         assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
     }
@@ -732,31 +817,35 @@ mod tests {
         static mut FRAME: [u8; 128] = [0; 128];
 
         fn rx_callback(_result: Result<RxOk, Error>) {
-            unsafe {RX_CALLED = true};
+            unsafe { RX_CALLED = true };
         }
 
-        let result = phy.rx(create_frame_buffer_from_static_buffer(unsafe {&mut FRAME}),
-                            rx_callback);
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            rx_callback,
+        );
         assert_eq!(result, Ok(()));
 
-        let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
-                                   0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let frame: [u8; 17] = [
+            16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07,
+        ];
 
         static mut TX_CALLED: bool = false;
         static mut TX_RECEIVED_RESULT: Option<Result<(), Error>> = None;
         static mut TX_RECEIVED_CONTEXT: &Option<u8> = &Some(0);
 
         fn tx_callback(result: Result<(), Error>, context: Context) {
-            unsafe {TX_CALLED = true};
-            unsafe {TX_RECEIVED_RESULT = Some(result)};
-            unsafe {TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap()};
+            unsafe { TX_CALLED = true };
+            unsafe { TX_RECEIVED_RESULT = Some(result) };
+            unsafe { TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
         }
 
         let result = phy.tx(&frame, tx_callback, &None::<u8>);
         assert_eq!(result, Err(Error::WouldBlock));
 
-        assert!(! unsafe {RX_CALLED});
-        assert!(! unsafe {TX_CALLED});
+        assert!(!unsafe { RX_CALLED });
+        assert!(!unsafe { TX_CALLED });
     }
 
     #[test]
@@ -767,8 +856,10 @@ mod tests {
         let phy = Phy::new(&radio_mock);
         phy.configure_802154();
 
-        let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
-                                   0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let frame: [u8; 17] = [
+            16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07,
+        ];
 
         static mut TX_CALLED: bool = false;
         static mut TX_RECEIVED_RESULT: Option<Result<(), Error>> = None;
@@ -776,9 +867,9 @@ mod tests {
         static mut RX_FRAME: [u8; 128] = [0; 128];
 
         fn tx_callback(result: Result<(), Error>, context: Context) {
-            unsafe {TX_CALLED = true};
-            unsafe {TX_RECEIVED_RESULT = Some(result)};
-            unsafe {TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap()};
+            unsafe { TX_CALLED = true };
+            unsafe { TX_RECEIVED_RESULT = Some(result) };
+            unsafe { TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
         }
 
         let result = phy.tx(&frame, tx_callback, &None::<u8>);
@@ -787,15 +878,16 @@ mod tests {
         static mut RX_CALLED: bool = false;
 
         fn rx_callback(_result: Result<RxOk, Error>) {
-            unsafe {RX_CALLED = true};
+            unsafe { RX_CALLED = true };
         }
 
-        let result = phy.rx(create_frame_buffer_from_static_buffer(unsafe {&mut RX_FRAME}),
-                            rx_callback);
+        let result = phy.rx(
+            create_frame_buffer_from_static_buffer(unsafe { &mut RX_FRAME }),
+            rx_callback,
+        );
         assert_eq!(result, Err(Error::WouldBlock));
 
-        assert!(! unsafe {RX_CALLED});
-        assert!(! unsafe {TX_CALLED});
+        assert!(!unsafe { RX_CALLED });
+        assert!(!unsafe { TX_CALLED });
     }
-
 }
