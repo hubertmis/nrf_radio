@@ -2,7 +2,20 @@ use core::any::Any;
 use core::fmt::{Debug, Formatter};
 use core::ops::{Deref, DerefMut};
 
+/// Function called when a FrameBuffer instance is dropped
+///
+/// This function is intended to be implemeted by an
+/// [allocator](super::frame_allocator::FrameAllocator) creating given
+/// [`FrameBuffer`] instance to deallocate the frame when dropped.
 pub type DropFunction = fn(&mut FrameBuffer, DropMetadata);
+
+/// Metadata passed as a parameter to the [`DropFunction`] function
+///
+/// When a [`FrameBuffer`] instance is dropped, associated [`DropFunction`] is called with
+/// parameters presenting reference to  the [`FrameBuffer`] instance and `DropMetadata` being any
+/// metadata selected by the [frame allocator](super::frame_allocator::FrameAllocator). The
+/// intention of `DropMetadata` is to help the allocator to identify the memory to free. It might
+/// contain an address, pointer, index in an array or any other useful data.
 pub type DropMetadata = &'static (dyn Any + Send + Sync);
 
 // TODO: Implement MutFrameBuffer as a separated type?
