@@ -155,7 +155,7 @@ impl Phy {
     /// ```
     pub fn new(radio: &RadioRegisterBlock) -> Self {
         let isr_data = IsrData {
-            radio: RadioPeriphWrapper::new(&radio),
+            radio: RadioPeriphWrapper::new(radio),
             state: State::Idle,
         };
 
