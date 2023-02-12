@@ -236,10 +236,10 @@ impl Phy {
     }
 
     fn get_802154_frequency_from_channel(channel: u8) -> Result<u16, Error> {
-        if channel < 11 || channel > 26 {
-            Err(Error::InvalidChannel)
-        } else {
+        if (11..=26).contains(&channel) {
             Ok(2405u16 + (channel - 11) as u16 * 5)
+        } else {
+            Err(Error::InvalidChannel)
         }
     }
 
