@@ -41,11 +41,5 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - uses: actions-rs/clippy@master
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        args: >
-          --all-features
-          --no-deps
-          --
-          -D warnings
+    - name: Run clippy check
+      run: cargo clippy --all-features --no-deps -- -D warnings
