@@ -36,7 +36,7 @@ pub trait FrameAllocator {
     ///   assert!(frame_error.is_err());
     /// # }
     /// ```
-    fn get_frame(&self) -> Result<FrameBuffer, Error>;
+    fn get_frame(&self) -> Result<FrameBuffer<'static>, Error>;
 }
 
 #[cfg(test)]

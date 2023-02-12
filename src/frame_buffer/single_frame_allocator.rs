@@ -90,7 +90,7 @@ impl SingleFrameAllocator {
 }
 
 impl FrameAllocator for SingleFrameAllocator {
-    fn get_frame(&self) -> Result<FrameBuffer, Error> {
+    fn get_frame(&self) -> Result<FrameBuffer<'static>, Error> {
         let mut result = Err(Error::WouldBlock);
         SingleFrameAllocator::use_frame_allocator(|fa| {
             result = if fa.is_allocated {
