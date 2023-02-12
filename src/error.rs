@@ -1,5 +1,5 @@
 /// Errors reported by radio software
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Error {
     /// The module is busy with ongoing operation
     WouldBlock,
