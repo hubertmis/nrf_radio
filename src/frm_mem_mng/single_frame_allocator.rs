@@ -58,7 +58,7 @@ impl SingleFrameAllocator {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
-    ///   use nrf_radio::frame_buffer::single_frame_allocator::SingleFrameAllocator;
+    ///   use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
     ///
     ///   let allocator = SingleFrameAllocator::new();
     /// # }
