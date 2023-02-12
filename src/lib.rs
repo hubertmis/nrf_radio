@@ -15,9 +15,8 @@ pub mod error;
 pub mod frame_buffer;
 
 /// Radio physical layer implementation for Nordic nRF SoCs.
-/// 
+///
 /// Currently only nRF52840 is supported, but porting to other SoCs should be straightforward.
 ///
 /// To use this module create an instance of [`Phy`](radio::Phy) and use methods of the created instance.
 pub mod radio;
-

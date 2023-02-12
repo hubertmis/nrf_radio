@@ -31,12 +31,16 @@ impl FrameBuffer {
     /// The buffer structure points to the `frame` memory slice provided by the caller. This slice
     /// is considered owned by the [`FrameBuffer`] until the `FrameBuffer` is dropped. While the
     /// slice is owned by the `FrameBuffer` it shall not be accessed in any other way than by
-    /// dereferencing the `FrameBuffer`. 
+    /// dereferencing the `FrameBuffer`.
     ///
     /// Releasing the memory slice for other use is indicated by the `FrameBuffer` by calling the
     /// `drop_fn` function passing a reference to the buffer being freed and a caller-defined
     /// `drop_md` reference.
-    pub fn new(frame: &'static mut [u8], drop_fn: Option<DropFunction>, drop_md: DropMetadata) -> Self {
+    pub fn new(
+        frame: &'static mut [u8],
+        drop_fn: Option<DropFunction>,
+        drop_md: DropMetadata,
+    ) -> Self {
         Self {
             frame,
             drop_fn,
