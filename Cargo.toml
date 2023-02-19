@@ -11,6 +11,7 @@ cortex-m = "0.7" # To be removed when critical sections is handled differently t
 defmt = "0.3" # To be optional, based on features
 
 [dev-dependencies]
+lazy_mut = "0.1.0"
 mockall = "0.11"
 mockall_double = "0.3"
 serial_test = "0.10"
