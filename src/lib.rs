@@ -8,6 +8,11 @@
 //! Currently only physical layer of nRF52840 is supported, but this crate
 //! is designed to be extensible for other protocols and other SoCs.
 
+// lazy_mut crate is used in tasklets tests
+#[cfg(test)]
+#[macro_use]
+extern crate lazy_mut;
+
 mod crit_sect;
 pub mod ieee802154;
 mod mutex;
