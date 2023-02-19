@@ -11,6 +11,7 @@
 mod crit_sect;
 pub mod ieee802154;
 mod mutex;
+pub mod utils; // Temporary make utils public to suppress "not used" warnings
 
 /// Defines errors reported by this crate
 pub mod error;
