@@ -31,15 +31,29 @@ enum ParseStatus<T> {
 
 /// Frame Types
 ///
-/// Compliant with Table 7-1 in IEEE 802.15.4-2015
+/// Compliant with Table 7-1 in IEEE 802.15.4-2020
 #[derive(Debug, Eq, PartialEq)]
 pub enum Type {
+    /// Beacon frame
     Beacon,
+    /// Data frame
     Data,
+    /// Acknowledgement frame
+    ///
+    /// Depending on the frame version this frame type represents immediate acknoledgement
+    /// (Imm-Ack) or enhanced acknowledgement (Enh-Ack)
     Ack,
+    /// MAC command frame
     Command,
+    /// Multipurpose frame
     Multipurpose,
+    /// Fragment pakcet or Frak frame
     Fragment,
+    /// Extended frame
+    ///
+    /// This type is used to specify additional frame types by adding more bits to the Frame Type
+    /// field. It is expected that this enum variant will be extended to represent more frame
+    /// types.
     Extended,
 }
 
@@ -65,16 +79,27 @@ impl TryFrom<&[u8]> for Type {
 }
 
 /// Frame Versions
+///
+/// Compliant with table 7-4 in IEEE 802.15.4-2020
+/// The "IEEE Std 802.15.4" entries in the table are represented by `V2015` enumeration variant.
+/// Other entries match the specification version present in given table entry.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Version {
+    /// "IEEE Std 802.15.4-2003" according to the table 7-4 in IEEE 802.15.4-2020
     V2003,
+    /// "IEEE Std 802.15.4-2006" according to the table 7-4 in IEEE 802.15.4-2020
     V2006,
+    /// "IEEE Std 802.15.4" according to the table 7-4 in IEEE 802.15.4-2020
     V2015,
 }
 
 impl Version {
-    fn is_present(buffer: &[u8]) -> Result<bool, Error> {
-        Frame::is_fcf_2bytes_long(buffer)
+    fn is_present(frame_type: &Type, buffer: &[u8]) -> Result<bool, Error> {
+        match frame_type {
+            Type::Beacon | Type::Data | Type::Ack | Type::Command => Ok(true),
+            Type::Multipurpose => Frame::is_fcf_2bytes_long(buffer),
+            Type::Fragment | Type::Extended => Ok(false),
+        }
     }
 }
 
@@ -82,16 +107,29 @@ impl TryFrom<&[u8]> for Version {
     type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Error> {
-        if Version::is_present(value)? {
+        let r#type = Type::try_from(value)?;
+
+        if Version::is_present(&r#type, value)? {
             if value.len() < VERSION_OFFSET {
                 return Err(Error::WouldBlock);
             }
 
-            match (value[VERSION_OFFSET] & 0b00110000) >> 4 {
-                0b00 => Ok(Version::V2003),
-                0b01 => Ok(Version::V2006),
-                0b10 => Ok(Version::V2015),
-                _ => Err(Error::InvalidFrame),
+            match r#type {
+                Type::Beacon | Type::Data | Type::Ack | Type::Command => {
+                    match (value[VERSION_OFFSET] & 0b00110000) >> 4 {
+                        0b00 => Ok(Version::V2003),
+                        0b01 => Ok(Version::V2006),
+                        0b10 => Ok(Version::V2015),
+                        _ => Err(Error::InvalidFrame),
+                    }
+                }
+                Type::Multipurpose => match (value[VERSION_OFFSET] & 0b00110000) >> 4 {
+                    0b00 => Ok(Version::V2015),
+                    _ => Err(Error::InvalidFrame),
+                },
+                Type::Fragment | Type::Extended => {
+                    panic!("Shall not enter this branch, because Frame Version field is missing")
+                }
             }
         } else {
             Err(Error::MissingField)
@@ -134,7 +172,13 @@ impl TryFrom<u8> for AddrMode {
 /// Supports both short and extended addressing modes.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Addr {
+    /// Short address (16 bits)
+    ///
+    /// Keeps little-endian value (like a frame in the air).
     Short([u8; SHORT_ADDR_SIZE]),
+    /// Extended address (64 bits)
+    ///
+    /// Keeps little-endian value (like a frame in the air).
     Ext([u8; EXT_ADDR_SIZE]),
 }
 
