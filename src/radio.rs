@@ -96,7 +96,9 @@ static ISR_DATA: Mutex<RefCell<Option<IsrData>>> = Mutex::new(RefCell::new(None)
 macro_rules! missing_test_fns {
     () => {
         #[no_mangle]
-        pub extern "C" fn __primask_r() {}
+        pub extern "C" fn __primask_r() -> u32 {
+            0
+        }
 
         #[no_mangle]
         pub extern "C" fn __cpsie() {}
@@ -554,6 +556,7 @@ mod tests {
     use serial_test::serial;
 
     // RADIO peripheral mock
+    #[repr(align(4))]
     struct RadioMock {
         memory: [u8; 4096],
     }
@@ -568,7 +571,7 @@ mod tests {
         type Target = RadioRegisterBlock;
         fn deref(&self) -> &Self::Target {
             let ptr: *const RadioRegisterBlock = self.memory.as_ptr() as *const _;
-            unsafe { &*ptr }
+            unsafe { ptr.as_ref().unwrap() }
         }
     }
 
@@ -578,6 +581,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_configuring_802154() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -634,6 +638,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_tx() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -685,6 +690,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_enter_rx() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -728,6 +734,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_rx_correct_frame() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -774,6 +781,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_rx_frame_with_incorrect_crc() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -812,6 +820,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_tx_request_in_rx_state_returns_error() {
         let radio_mock = RadioMock::new();
         Phy::reset();
@@ -856,6 +865,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg_attr(miri, ignore)]
     fn test_802154_rx_request_during_tx_returns_error() {
         let radio_mock = RadioMock::new();
         Phy::reset();
