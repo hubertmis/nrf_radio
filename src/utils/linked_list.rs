@@ -8,7 +8,8 @@
 //! correct links between the items, but not for the memory management. The implication of such
 //! design is required lifetime of list items, which must be at least as long as the list itself.
 
-use core::ops::Deref;
+use super::linked_list_iter::{Iter, IterMut};
+use core::ops::{Deref, DerefMut};
 
 /// Errors reported by the methods in this module
 #[derive(Debug, PartialEq)]
@@ -54,6 +55,22 @@ impl<'item, T> ListItem<'item, T> {
     pub fn new(item: T) -> Self {
         Self { item, next: None }
     }
+
+    /// Get reference to the next item in the list
+    ///
+    /// This method is intended to be used by the list iterator implementation.
+    pub(super) fn get_next(&self) -> &Option<&'item mut ListItem<'item, T>> {
+        &self.next
+    }
+
+    /// Get reference to the data kept by this item and reference to the next item in the list
+    ///
+    /// This method is intended to be used by the list mutable iterator implementation.
+    pub(super) fn get_mut_item_and_next(
+        &mut self,
+    ) -> (&mut T, &mut Option<&'item mut ListItem<'item, T>>) {
+        (&mut self.item, &mut self.next)
+    }
 }
 
 impl<'item, T> Deref for ListItem<'item, T> {
@@ -61,6 +78,12 @@ impl<'item, T> Deref for ListItem<'item, T> {
 
     fn deref(&self) -> &<Self as Deref>::Target {
         &self.item
+    }
+}
+
+impl<'item, T> DerefMut for ListItem<'item, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.item
     }
 }
 
@@ -305,6 +328,72 @@ impl<'list, T> LinkedList<'list, T> {
             Err(Error::NotFound(token))
         }
     }
+
+    /// Returns an iterator over the list.
+    ///
+    /// The iterator yields all linked items.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nrf_radio::utils::linked_list::{LinkedList, ListItem};
+    ///
+    /// let mut list = LinkedList::new();
+    /// let mut item1 = ListItem::new(1);
+    /// let mut item2 = ListItem::new(2);
+    ///
+    /// list.push(&mut item1);
+    /// list.push(&mut item2);
+    ///
+    /// let sum: i32 = list.iter().sum();
+    /// assert_eq!(sum, 3);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, 'list, T> {
+        Iter::new(self)
+    }
+
+    /// Returns an iterator that allows modyfing each item.
+    ///
+    /// The iterator yields all linked items.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use core::ops::Deref;
+    /// use nrf_radio::utils::linked_list::{LinkedList, ListItem};
+    ///
+    /// let mut list = LinkedList::new();
+    /// let mut item1 = ListItem::new(1);
+    /// let mut item2 = ListItem::new(2);
+    ///
+    /// list.push(&mut item1);
+    /// list.push(&mut item2);
+    ///
+    /// for mut item in list.iter_mut() {
+    ///   *item = 3;
+    /// }
+    ///
+    /// while let Some(item) = list.pop() {
+    ///   assert_eq!(item.deref().deref(), &3);
+    /// }
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, 'list, T> {
+        IterMut::new(self)
+    }
+
+    /// Returns reference to the first item in the list or None if the list is empty.
+    ///
+    /// This method is intended to be used by an iterator implementation.
+    pub(super) fn get_first(&self) -> &Option<&'list mut ListItem<'list, T>> {
+        &self.first
+    }
+
+    /// Returns mutable reference to the first item in the list or None if the list is empty.
+    ///
+    /// This method is intended to be used by a mutable iterator implementation.
+    pub(super) fn get_mut_first(&mut self) -> &mut Option<&'list mut ListItem<'list, T>> {
+        &mut self.first
+    }
 }
 
 impl<'list, T> Default for LinkedList<'list, T> {
@@ -463,5 +552,20 @@ mod tests {
         assert_eq!(retrieved_value, &mut "tail");
 
         assert!(list.pop().is_none());
+    }
+
+    #[test]
+    fn test_iter() {
+        let mut list = LinkedList::new();
+        let mut item1 = ListItem::new(1);
+        let mut item2 = ListItem::new(2);
+        let mut item3 = ListItem::new(3);
+
+        list.push(&mut item1);
+        list.push(&mut item2);
+        list.push(&mut item3);
+
+        let iter = list.iter();
+        assert_eq!(iter.sum::<u32>(), 6u32);
     }
 }
