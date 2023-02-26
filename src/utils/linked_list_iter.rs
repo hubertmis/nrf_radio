@@ -62,7 +62,7 @@ impl<'iter, 'list, T> Iterator for IterMut<'iter, 'list, T> {
             Option<&'iter mut Option<&'list mut ListItem<'list, T>>>,
         ) = match tmp {
             Some(Some(item_ref)) => {
-                let (next, following) = item_ref.get_mut_item_and_next();
+                let (next, following) = item_ref.get_mut_data_and_next();
                 (Some(next), Some(following))
             }
             Some(None) | None => (None, None),

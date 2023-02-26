@@ -56,6 +56,45 @@ impl<'item, T> ListItem<'item, T> {
         Self { item, next: None }
     }
 
+    /// Get a reference to data stored by this list item
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nrf_radio::utils::linked_list::ListItem;
+    ///
+    /// let list_item = ListItem::new("data");
+    ///
+    /// assert_eq!(list_item.get_data(), &"data");
+    /// ```
+    pub fn get_data(&self) -> &T {
+        &self.item
+    }
+
+    /// Insert this item to a list just behind passed item.
+    ///
+    /// The item passed as `existing` must be in a list.
+    ///
+    /// Using this function requires some access to mutable references of the items in a list. Such
+    /// access is restricted to this and neghbor modules, so this function is also restricted.
+    pub(super) fn insert_behind(
+        &'item mut self,
+        existing: &mut ListItem<'item, T>,
+    ) -> ListItemToken<'item, T> {
+        if self.next.is_some() {
+            panic!("Next link of an item is set indicating it is added to a list. But if it is added to a list it's user shall not have access to mutable reference to an item to call this function.");
+        }
+
+        let following = existing.next.take();
+        self.next = following;
+
+        let token = ListItemToken { ptr: self };
+
+        existing.next.replace(self);
+
+        token
+    }
+
     /// Get reference to the next item in the list
     ///
     /// This method is intended to be used by the list iterator implementation.
@@ -66,7 +105,7 @@ impl<'item, T> ListItem<'item, T> {
     /// Get reference to the data kept by this item and reference to the next item in the list
     ///
     /// This method is intended to be used by the list mutable iterator implementation.
-    pub(super) fn get_mut_item_and_next(
+    pub(super) fn get_mut_data_and_next(
         &mut self,
     ) -> (&mut T, &mut Option<&'item mut ListItem<'item, T>>) {
         (&mut self.item, &mut self.next)
@@ -660,5 +699,88 @@ mod tests {
 
         let item_ref = list.pop();
         assert!(item_ref.is_none());
+    }
+
+    #[test]
+    fn test_insert_behind_the_only_element() {
+        let mut list = LinkedList::new();
+        let mut head = ListItem::new("head");
+        let mut new = ListItem::new("new");
+
+        list.push(&mut head);
+
+        let existing = list.get_mut_first().as_mut().unwrap();
+
+        new.insert_behind(existing);
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "head");
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "new");
+
+        assert!(list.pop().is_none());
+    }
+
+    #[test]
+    fn test_insert_behind_the_tail() {
+        let mut list = LinkedList::new();
+        let mut head = ListItem::new("head");
+        let mut tail = ListItem::new("tail");
+        let mut new = ListItem::new("new");
+
+        list.push(&mut tail);
+        list.push(&mut head);
+
+        let head = list.get_mut_first().as_mut().unwrap();
+        let (_, tail) = head.get_mut_data_and_next();
+        let tail = tail.as_mut().unwrap();
+
+        new.insert_behind(tail);
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "head");
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "tail");
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "new");
+
+        assert!(list.pop().is_none());
+    }
+
+    #[test]
+    fn test_insert_behind_the_head() {
+        let mut list = LinkedList::new();
+        let mut head = ListItem::new("head");
+        let mut tail = ListItem::new("tail");
+        let mut new = ListItem::new("new");
+
+        list.push(&mut tail);
+        list.push(&mut head);
+
+        let head = list.get_mut_first().as_mut().unwrap();
+
+        new.insert_behind(head);
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "head");
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "new");
+
+        let retrieved_item = list.pop().unwrap();
+        let retrieved_value = retrieved_item.deref().deref();
+        assert_eq!(retrieved_value, &mut "tail");
+
+        assert!(list.pop().is_none());
     }
 }
