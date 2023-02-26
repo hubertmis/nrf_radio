@@ -402,6 +402,27 @@ impl<'list, T> Default for LinkedList<'list, T> {
     }
 }
 
+// Cannot impl<'list, T> IntoIterator for LinkedList<'list, T>, because LinkedList does not own T.
+// It owns only &'list mut T.
+
+impl<'iter, 'list, T> IntoIterator for &'iter LinkedList<'list, T> {
+    type Item = &'iter T;
+    type IntoIter = Iter<'iter, 'list, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'iter, 'list, T> IntoIterator for &'iter mut LinkedList<'list, T> {
+    type Item = &'iter mut T;
+    type IntoIter = IterMut<'iter, 'list, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +588,77 @@ mod tests {
 
         let iter = list.iter();
         assert_eq!(iter.sum::<u32>(), 6u32);
+    }
+
+    #[test]
+    fn test_iter_mut() {
+        let mut list = LinkedList::new();
+        let mut item1 = ListItem::new(1);
+        let mut item2 = ListItem::new(2);
+        let mut item3 = ListItem::new(3);
+
+        list.push(&mut item1);
+        list.push(&mut item2);
+        list.push(&mut item3);
+
+        for item in list.iter_mut() {
+            *item -= 1;
+        }
+
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &2);
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &1);
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &0);
+
+        let item_ref = list.pop();
+        assert!(item_ref.is_none());
+    }
+
+    #[test]
+    fn test_into_iter() {
+        let mut list = LinkedList::new();
+        let mut item1 = ListItem::new(1);
+        let mut item2 = ListItem::new(2);
+        let mut item3 = ListItem::new(3);
+
+        list.push(&mut item1);
+        list.push(&mut item2);
+        list.push(&mut item3);
+
+        let mut cnt = 0;
+
+        for _item in &list {
+            cnt += 1;
+        }
+
+        assert_eq!(cnt, 3);
+    }
+
+    #[test]
+    fn test_into_iter_mutable() {
+        let mut list = LinkedList::new();
+        let mut item1 = ListItem::new(1);
+        let mut item2 = ListItem::new(2);
+        let mut item3 = ListItem::new(3);
+
+        list.push(&mut item1);
+        list.push(&mut item2);
+        list.push(&mut item3);
+
+        for item in &mut list {
+            *item += 1;
+        }
+
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &4);
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &3);
+        let item_ref = list.pop();
+        assert_eq!(item_ref.unwrap().deref().deref(), &2);
+
+        let item_ref = list.pop();
+        assert!(item_ref.is_none());
     }
 }
