@@ -320,11 +320,11 @@ mod tests {
         }
 
         for i in 0..N {
-            assert_eq!(unsafe { CALLED[i].borrow().deref() }, &false);
+            assert_eq!(unsafe { *(CALLED[i].borrow()) }, false);
         }
         queue.run();
         for i in 0..N {
-            assert_eq!(unsafe { CALLED[i].borrow().deref() }, &true);
+            assert_eq!(unsafe { *(CALLED[i].borrow()) }, true);
         }
     }
 

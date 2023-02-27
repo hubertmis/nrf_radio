@@ -167,7 +167,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::ops::Deref;
 
     #[test]
     fn test_insert_greater_int_first() {
@@ -179,9 +178,9 @@ mod tests {
         list.insert(&mut item1);
 
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &1);
+        assert_eq!(**item_ref, 1);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &2);
+        assert_eq!(**item_ref, 2);
 
         assert!(list.pop().is_none());
     }
@@ -196,9 +195,9 @@ mod tests {
         list.insert(&mut item2);
 
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &1);
+        assert_eq!(**item_ref, 1);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &2);
+        assert_eq!(**item_ref, 2);
 
         assert!(list.pop().is_none());
     }
@@ -215,11 +214,11 @@ mod tests {
         list.insert(&mut item3);
 
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &1);
+        assert_eq!(**item_ref, 1);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &2);
+        assert_eq!(**item_ref, 2);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &3);
+        assert_eq!(**item_ref, 3);
 
         assert!(list.pop().is_none());
     }
@@ -236,11 +235,11 @@ mod tests {
         list.insert(&mut item2);
 
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &1);
+        assert_eq!(**item_ref, 1);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &2);
+        assert_eq!(**item_ref, 2);
         let item_ref = list.pop().unwrap();
-        assert_eq!(item_ref.deref().deref(), &3);
+        assert_eq!(**item_ref, 3);
 
         assert!(list.pop().is_none());
     }
