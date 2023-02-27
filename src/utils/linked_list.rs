@@ -413,7 +413,7 @@ impl<'list, T> LinkedList<'list, T> {
     /// }
     ///
     /// while let Some(item) = list.pop() {
-    ///   assert_eq!(item.deref().deref(), &3);
+    ///   assert_eq!(**item, 3);
     /// }
     /// ```
     pub fn iter_mut(&mut self) -> IterMut<'_, 'list, T> {
@@ -474,8 +474,8 @@ mod tests {
         list.push(&mut item);
         let retrieved_item = list.pop().unwrap();
 
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut 5);
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, 5);
 
         assert!(list.pop().is_none());
     }
@@ -497,8 +497,8 @@ mod tests {
         for i in 0..N {
             let retrieved_item = list.pop().unwrap();
 
-            let retrieved_value = retrieved_item.deref().deref();
-            assert_eq!(retrieved_value, &mut (N - 1 - i));
+            let retrieved_value = **retrieved_item;
+            assert_eq!(retrieved_value, N - 1 - i);
         }
 
         assert!(list.pop().is_none());
@@ -512,8 +512,8 @@ mod tests {
         let token = list.push(&mut item);
         let retrieved_item = list.remove(token).unwrap();
 
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut 5);
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, 5);
 
         assert!(list.pop().is_none());
     }
@@ -526,8 +526,8 @@ mod tests {
         let token = list.push(&mut item);
         let token_ptr = token.ptr;
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut 5);
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, 5);
 
         let retrieve_result = list.remove(token);
         assert_eq!(
@@ -548,16 +548,16 @@ mod tests {
         let token = list.push(&mut head);
 
         let retrieved_item = list.remove(token).unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "middle");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "middle");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "tail");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "tail");
 
         assert!(list.pop().is_none());
     }
@@ -574,16 +574,16 @@ mod tests {
         list.push(&mut head);
 
         let retrieved_item = list.remove(token).unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "tail");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "tail");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "middle");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "middle");
 
         assert!(list.pop().is_none());
     }
@@ -600,16 +600,16 @@ mod tests {
         list.push(&mut head);
 
         let retrieved_item = list.remove(token).unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "middle");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "middle");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "tail");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "tail");
 
         assert!(list.pop().is_none());
     }
@@ -645,11 +645,11 @@ mod tests {
         }
 
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &2);
+        assert_eq!(**(item_ref.unwrap()), 2);
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &1);
+        assert_eq!(**(item_ref.unwrap()), 1);
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &0);
+        assert_eq!(**(item_ref.unwrap()), 0);
 
         let item_ref = list.pop();
         assert!(item_ref.is_none());
@@ -691,11 +691,11 @@ mod tests {
         }
 
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &4);
+        assert_eq!(**(item_ref.unwrap()), 4);
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &3);
+        assert_eq!(**(item_ref.unwrap()), 3);
         let item_ref = list.pop();
-        assert_eq!(item_ref.unwrap().deref().deref(), &2);
+        assert_eq!(**(item_ref.unwrap()), 2);
 
         let item_ref = list.pop();
         assert!(item_ref.is_none());
@@ -714,12 +714,12 @@ mod tests {
         new.insert_behind(existing);
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "new");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "new");
 
         assert!(list.pop().is_none());
     }
@@ -741,16 +741,16 @@ mod tests {
         new.insert_behind(tail);
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "tail");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "tail");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "new");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "new");
 
         assert!(list.pop().is_none());
     }
@@ -770,16 +770,16 @@ mod tests {
         new.insert_behind(head);
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "head");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "head");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "new");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "new");
 
         let retrieved_item = list.pop().unwrap();
-        let retrieved_value = retrieved_item.deref().deref();
-        assert_eq!(retrieved_value, &mut "tail");
+        let retrieved_value = **retrieved_item;
+        assert_eq!(retrieved_value, "tail");
 
         assert!(list.pop().is_none());
     }

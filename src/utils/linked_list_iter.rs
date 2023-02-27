@@ -1,5 +1,4 @@
 use super::linked_list::{LinkedList, ListItem};
-use core::ops::Deref;
 
 pub struct Iter<'iter, 'list, T> {
     next: &'iter Option<&'list mut ListItem<'list, T>>,
@@ -28,7 +27,7 @@ impl<'iter, T> Iterator for Iter<'iter, '_, T> {
 
         self.next = following;
 
-        Some(next.as_ref()?.deref().deref())
+        Some(next.as_ref()?)
     }
 }
 
