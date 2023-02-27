@@ -8,7 +8,7 @@
 //! correct links between the items, but not for the memory management. The implication of such
 //! design is required lifetime of list items, which must be at least as long as the list itself.
 
-use super::linked_list_iter::{Iter, IterMut};
+use super::linked_list_iter::Iter;
 use core::ops::{Deref, DerefMut};
 
 /// Errors reported by the methods in this module
@@ -391,35 +391,6 @@ impl<'list, T> LinkedList<'list, T> {
         Iter::new(self)
     }
 
-    /// Returns an iterator that allows modyfing each item.
-    ///
-    /// The iterator yields all linked items.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use core::ops::Deref;
-    /// use nrf_radio::utils::linked_list::{LinkedList, ListItem};
-    ///
-    /// let mut list = LinkedList::new();
-    /// let mut item1 = ListItem::new(1);
-    /// let mut item2 = ListItem::new(2);
-    ///
-    /// list.push(&mut item1);
-    /// list.push(&mut item2);
-    ///
-    /// for mut item in list.iter_mut() {
-    ///   *item = 3;
-    /// }
-    ///
-    /// while let Some(item) = list.pop() {
-    ///   assert_eq!(**item, 3);
-    /// }
-    /// ```
-    pub fn iter_mut(&mut self) -> IterMut<'_, 'list, T> {
-        IterMut::new(self)
-    }
-
     /// Returns reference to the first item in the list or None if the list is empty.
     ///
     /// This method is intended to be used by an iterator implementation.
@@ -450,15 +421,6 @@ impl<'iter, 'list, T> IntoIterator for &'iter LinkedList<'list, T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
-    }
-}
-
-impl<'iter, 'list, T> IntoIterator for &'iter mut LinkedList<'list, T> {
-    type Item = &'iter mut T;
-    type IntoIter = IterMut<'iter, 'list, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
     }
 }
 
@@ -630,32 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_mut() {
-        let mut list = LinkedList::new();
-        let mut item1 = ListItem::new(1);
-        let mut item2 = ListItem::new(2);
-        let mut item3 = ListItem::new(3);
-
-        list.push(&mut item1);
-        list.push(&mut item2);
-        list.push(&mut item3);
-
-        for item in list.iter_mut() {
-            *item -= 1;
-        }
-
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 2);
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 1);
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 0);
-
-        let item_ref = list.pop();
-        assert!(item_ref.is_none());
-    }
-
-    #[test]
     fn test_into_iter() {
         let mut list = LinkedList::new();
         let mut item1 = ListItem::new(1);
@@ -673,32 +609,6 @@ mod tests {
         }
 
         assert_eq!(cnt, 3);
-    }
-
-    #[test]
-    fn test_into_iter_mutable() {
-        let mut list = LinkedList::new();
-        let mut item1 = ListItem::new(1);
-        let mut item2 = ListItem::new(2);
-        let mut item3 = ListItem::new(3);
-
-        list.push(&mut item1);
-        list.push(&mut item2);
-        list.push(&mut item3);
-
-        for item in &mut list {
-            *item += 1;
-        }
-
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 4);
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 3);
-        let item_ref = list.pop();
-        assert_eq!(**(item_ref.unwrap()), 2);
-
-        let item_ref = list.pop();
-        assert!(item_ref.is_none());
     }
 
     #[test]
