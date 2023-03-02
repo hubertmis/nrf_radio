@@ -49,7 +49,7 @@ use core::ops::{Deref, DerefMut};
 /// [`ListItem`](crate::utils::linked_list::ListItem) storing a tasklet
 pub type TaskletListItem<'a> = ListItem<'a, TaskletData<'a>>;
 /// Reference to anything. This reference is blindly passed to the tasklet function
-pub type Context = &'static dyn Any;
+pub type Context = &'static (dyn Any + Send + Sync);
 /// Type of function usable by tasklet
 ///
 /// This function takes two parameters:
@@ -296,14 +296,31 @@ mod tests {
     fn test_run_tasklet_queue_with_multiple_entries() {
         use core::cell::RefCell;
 
-        const N: usize = 100;
-        const NOT_CALLED: RefCell<bool> = RefCell::new(false);
+        struct SyncWrapper<T> {
+            inner: T,
+        }
 
-        static mut CALLED: [RefCell<bool>; N] = [NOT_CALLED; N];
+        impl<T> SyncWrapper<T> {
+            pub const fn new(value: T) -> SyncWrapper<T> {
+                Self { inner: value }
+            }
+
+            pub fn borrow(&self) -> &T {
+                &self.inner
+            }
+        }
+
+        unsafe impl<T> Sync for SyncWrapper<T> where T: Send {}
+
+        const N: usize = 100;
+        const NOT_CALLED: SyncWrapper<RefCell<bool>> = SyncWrapper::new(RefCell::new(false));
+
+        static mut CALLED: [SyncWrapper<RefCell<bool>>; N] = [NOT_CALLED; N];
         fn callback(_tasklet_ref: &mut TaskletListItem, context: Context) {
             let mut called = context
-                .downcast_ref::<RefCell<bool>>()
+                .downcast_ref::<SyncWrapper<RefCell<bool>>>()
                 .unwrap()
+                .borrow()
                 .borrow_mut();
             *called = true;
         }
@@ -320,11 +337,11 @@ mod tests {
         }
 
         for i in 0..N {
-            assert_eq!(unsafe { *(CALLED[i].borrow()) }, false);
+            assert_eq!(unsafe { *(CALLED[i].borrow().borrow()) }, false);
         }
         queue.run();
         for i in 0..N {
-            assert_eq!(unsafe { *(CALLED[i].borrow()) }, true);
+            assert_eq!(unsafe { *(CALLED[i].borrow().borrow()) }, true);
         }
     }
 
