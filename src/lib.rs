@@ -13,10 +13,11 @@
 #[macro_use]
 extern crate lazy_mut;
 
-mod crit_sect;
+pub mod crit_sect; // Temporary pub, to support sharing tasklets
 pub mod ieee802154;
-mod mutex;
-pub mod utils; // Temporary make utils public to suppress "not used" warnings
+pub mod mutex; // temporary pub, to support sharing tasklets
+pub mod utils; // Temporary make utils public to allow simulating "higher layers" in external
+               // crates
 
 /// Defines errors reported by this crate
 pub mod error;

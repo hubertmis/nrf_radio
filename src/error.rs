@@ -13,6 +13,10 @@ pub enum Error {
     NotYetParsedField,
     /// The requested field is missing
     MissingField,
+    /// The frame is destined to other Pan ID than this node belongs to
+    NotMatchingPanId,
+    /// The frame is destined to other address than this node's
+    NotMatchingAddress,
     /// The channel number is out of range for selected Phy
     InvalidChannel,
     /// The CRC value in the received frame is invalid
