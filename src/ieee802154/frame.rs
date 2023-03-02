@@ -285,7 +285,7 @@ impl Frame {
     /// ```
     pub fn from_frame_buffer(buffer: &FrameBuffer) -> Result<Self, Error> {
         let mut frame = Self::new();
-        frame.parse(buffer)?;
+        frame.parse(&buffer[0..=Frame::len(buffer)])?;
 
         Ok(frame)
     }
@@ -1014,5 +1014,26 @@ mod tests {
         assert_eq!(frame.get_dst_pan_id(), Ok(&None));
         assert_eq!(frame.get_dst_address(), Ok(&None));
         //assert_eq!(frame.get_src_pan_id(), Ok(&Some([0x01u8, 0x23])));
+    }
+
+    #[test]
+    fn test_parse_longer_buffer_than_frame() {
+        let frame_data = &mut [
+            16u8, // PHR
+            0x61, 0x98, // FCF
+            0xde, // SeqNum
+            0xfe, 0xde, // Dst Pan Id
+            0x00, 0xaa, // Dst Addr
+            0xfe, 0x01, // Src Addr
+            0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+            0x00, 0x00, // MFR
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // Some padding
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // Some padding
+        ];
+        let buffer = buffer_from_frame(frame_data);
+        let frame = Frame::from_frame_buffer(&buffer).unwrap();
+
+        assert_eq!(frame.get_type(), Ok(&Type::Data));
+        assert_eq!(frame.get_sequence_number(), Ok(Some(0xde)));
     }
 }
