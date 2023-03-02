@@ -24,7 +24,7 @@ impl Pib {
     ///
     /// let pib = Pib::new();
     /// ```
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             panid: [0xff, 0xff],
             short_addr: [0xff, 0xff],
