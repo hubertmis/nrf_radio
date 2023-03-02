@@ -12,7 +12,7 @@ use super::linked_list_iter::Iter;
 use core::ops::{Deref, DerefMut};
 
 /// Errors reported by the methods in this module
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Error<'list, T> {
     /// Item represented by given [token](ListItemToken) was not found in the list. The ownership
     /// of the token is returned to the caller.
@@ -146,6 +146,7 @@ pub struct ListItemToken<'item, T> {
 }
 
 /// The type representing a linked list.
+#[derive(Default)]
 pub struct LinkedList<'list, T> {
     first: Option<&'list mut ListItem<'list, T>>,
 }
@@ -403,12 +404,6 @@ impl<'list, T> LinkedList<'list, T> {
     /// This method is intended to be used by a mutable iterator implementation.
     pub(super) fn get_mut_first(&mut self) -> &mut Option<&'list mut ListItem<'list, T>> {
         &mut self.first
-    }
-}
-
-impl<'list, T> Default for LinkedList<'list, T> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
