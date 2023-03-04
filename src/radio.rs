@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::mutex::Mutex;
 use core::any::Any;
-use core::cell::RefCell;
 use core::ops::Deref;
 
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
@@ -83,10 +82,9 @@ struct IsrData {
     state: State,
 }
 
-// RefCell is required to verify run-time if critical sections work as expected
 // There is only one ISR_DATA instance, because there is only one ISR handler. This instance should
 // be multiplied (an array) if there were more peripheral instances (implying more ISRs) to handle.
-static ISR_DATA: Mutex<RefCell<Option<IsrData>>> = Mutex::new(RefCell::new(None));
+static ISR_DATA: Mutex<Option<IsrData>> = Mutex::new(None);
 
 /// Macro used to build tests on a host
 ///
@@ -125,7 +123,7 @@ macro_rules! missing_test_fns {
 /// # }
 /// ```
 pub struct Phy {
-    isr_data: &'static Mutex<RefCell<Option<IsrData>>>,
+    isr_data: &'static Mutex<Option<IsrData>>,
 }
 
 impl Phy {
@@ -135,7 +133,7 @@ impl Phy {
     #[doc(hidden)]
     pub fn reset() {
         crate::crit_sect::locked(|cs| {
-            ISR_DATA.borrow(cs).replace(None);
+            *ISR_DATA.borrow_mut(cs) = None;
         });
     }
 
@@ -162,7 +160,7 @@ impl Phy {
         };
 
         crate::crit_sect::locked(|cs| {
-            let prev_isr_data = ISR_DATA.borrow(cs).replace(Some(isr_data));
+            let prev_isr_data = ISR_DATA.borrow_mut(cs).replace(isr_data);
             assert!(prev_isr_data.is_none());
         });
 
@@ -177,7 +175,7 @@ impl Phy {
         F: FnOnce(&mut IsrData) -> R,
     {
         crate::crit_sect::locked(|cs| {
-            let isr_data_option = &mut self.isr_data.borrow(cs).borrow_mut();
+            let isr_data_option = &mut self.isr_data.borrow_mut(cs);
             let isr_data = &mut isr_data_option.as_mut().unwrap();
             func(isr_data)
         })
@@ -480,10 +478,7 @@ fn irq_handler() {
     let mut callback = Callback::None;
 
     crate::crit_sect::locked(|cs| {
-        //let mut r = ISR_DATA.borrow(cs).borrow_mut();
-        //let i = r.as_mut().unwrap();
-
-        let mut i = ISR_DATA.borrow(cs).replace(None).unwrap();
+        let mut i = ISR_DATA.borrow_mut(cs).take().unwrap();
 
         match i.state {
             State::Rx(rx_data) => {
@@ -536,7 +531,7 @@ fn irq_handler() {
             State::Idle => panic!("An event received in Idle state"),
         }
 
-        let temp_i = ISR_DATA.borrow(cs).replace(Some(i));
+        let temp_i = ISR_DATA.borrow_mut(cs).replace(i);
         debug_assert!(temp_i.is_none());
     });
 

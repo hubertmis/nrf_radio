@@ -3,14 +3,12 @@ use super::frame_buffer::{DropMetadata, FrameBuffer};
 use crate::crit_sect;
 use crate::error::Error;
 use crate::mutex::Mutex;
-use core::cell::RefCell;
 
 #[cfg(test)]
 const NUM_BUFS: usize = 1;
 const BUF_SIZE: usize = 128;
 
-static FRAME_ALLOCATOR: Mutex<RefCell<Option<SingleFrameAllocator>>> =
-    Mutex::new(RefCell::new(None));
+static FRAME_ALLOCATOR: Mutex<Option<SingleFrameAllocator>> = Mutex::new(None);
 static mut DATA: [u8; BUF_SIZE] = [0; BUF_SIZE];
 
 /// Simple radio frames allocator
@@ -29,7 +27,7 @@ impl SingleFrameAllocator {
     #[doc(hidden)]
     pub fn reset() {
         crit_sect::locked(|cs| {
-            FRAME_ALLOCATOR.borrow(cs).replace(None);
+            *FRAME_ALLOCATOR.borrow_mut(cs) = None;
         });
     }
 
@@ -39,7 +37,7 @@ impl SingleFrameAllocator {
         F: FnOnce(&mut SingleFrameAllocator) -> R,
     {
         crit_sect::locked(|cs| {
-            let frame_allocator_option = &mut FRAME_ALLOCATOR.borrow(cs).borrow_mut();
+            let frame_allocator_option = &mut FRAME_ALLOCATOR.borrow_mut(cs);
             let frame_allocator = &mut frame_allocator_option.as_mut().unwrap();
             func(frame_allocator)
         })
@@ -69,7 +67,7 @@ impl SingleFrameAllocator {
         };
 
         crit_sect::locked(|cs| {
-            let prev_frame_allocator = FRAME_ALLOCATOR.borrow(cs).replace(Some(frame_allocator));
+            let prev_frame_allocator = FRAME_ALLOCATOR.borrow_mut(cs).replace(frame_allocator);
             assert!(prev_frame_allocator.is_none());
         });
 

@@ -17,7 +17,6 @@ use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 use crate::crit_sect::CriticalSection;
 use crate::mutex::Mutex;
-use core::cell::RefCell;
 
 const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
 const BROADCAST_SHORT_ADDR: [u8; 2] = [0xff, 0xff];
@@ -27,7 +26,7 @@ const BROADCAST_SHORT_ADDR: [u8; 2] = [0xff, 0xff];
 pub type RxDoneCallback = fn(Result<FrameBuffer, Error>);
 
 // Callbacks are to be called from IRQs. That's why it require static data
-static CALLBACK_DATA: Mutex<RefCell<Option<CallbackData>>> = Mutex::new(RefCell::new(None));
+static CALLBACK_DATA: Mutex<Option<CallbackData>> = Mutex::new(None);
 
 struct CallbackData {
     phy: &'static Phy,
@@ -37,7 +36,7 @@ struct CallbackData {
     //       But on the other hand, running tasklets cannot be from critical section
     //       Probably something around TaskletQueue should be changes so that it does not require
     //       mutability
-    tasklet_queue: &'static Mutex<RefCell<TaskletQueue<'static>>>,
+    tasklet_queue: &'static Mutex<TaskletQueue<'static>>,
 
     rx_result: Option<Result<FrameBuffer<'static>, Error>>,
     receive_done_tasklet: Tasklet<'static>,
@@ -47,7 +46,7 @@ struct CallbackData {
 
 /// IEEE 802.15.4 receiver
 pub struct Rx {
-    callback_data: &'static Mutex<RefCell<Option<CallbackData>>>,
+    callback_data: &'static Mutex<Option<CallbackData>>,
 }
 
 impl Rx {
@@ -59,7 +58,6 @@ impl Rx {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
-    ///   use core::cell::RefCell;
     ///   use nrf52840_hal::pac::Peripherals;
     ///   use nrf_radio::mutex::Mutex;
     ///   use nrf_radio::ieee802154::pib::Pib;
@@ -69,7 +67,7 @@ impl Rx {
     ///
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
-    ///   static mut TASKLET_QUEUE: Option<Mutex<RefCell<TaskletQueue>>> = None;
+    ///   static mut TASKLET_QUEUE: Option<Mutex<TaskletQueue>> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -77,7 +75,7 @@ impl Rx {
     ///   unsafe {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
-    ///     TASKLET_QUEUE.replace(Mutex::new(RefCell::new(TaskletQueue::new())));
+    ///     TASKLET_QUEUE.replace(Mutex::new(TaskletQueue::new()));
     ///
     ///     let rx = Rx::new(PHY.as_ref().unwrap(), &PIB, TASKLET_QUEUE.as_ref().unwrap());
     ///   }
@@ -87,7 +85,7 @@ impl Rx {
     pub fn new(
         phy: &'static Phy,
         pib: &'static Pib,
-        tasklet_queue: &'static Mutex<RefCell<TaskletQueue<'static>>>,
+        tasklet_queue: &'static Mutex<TaskletQueue<'static>>,
     ) -> Self {
         let new_callback_data = CallbackData {
             phy,
@@ -100,10 +98,10 @@ impl Rx {
         };
 
         crit_sect::locked(|cs| {
-            let prev_data = CALLBACK_DATA.borrow(cs).replace(Some(new_callback_data));
+            let prev_data = CALLBACK_DATA.borrow_mut(cs).replace(new_callback_data);
             assert!(prev_data.is_none());
 
-            let data_option = &mut CALLBACK_DATA.borrow(cs).borrow_mut();
+            let data_option = &mut CALLBACK_DATA.borrow_mut(cs);
             let data = &mut data_option.as_mut().unwrap();
             let receive_done_tasklet_ptr: *mut Tasklet<'static> = &mut data.receive_done_tasklet;
             // TODO: describe safety
@@ -123,7 +121,7 @@ impl Rx {
         F: FnOnce(&mut CallbackData) -> R,
     {
         crit_sect::locked(|cs| {
-            let data_option = &mut self.callback_data.borrow(cs).borrow_mut();
+            let data_option = &mut self.callback_data.borrow_mut(cs);
             let data = &mut data_option.as_mut().unwrap();
             func(data)
         })
@@ -135,10 +133,10 @@ impl Rx {
         F: FnOnce(&CriticalSection, &mut CallbackData) -> R,
     {
         let callback_data = context
-            .downcast_ref::<Mutex<RefCell<Option<CallbackData>>>>()
+            .downcast_ref::<Mutex<Option<CallbackData>>>()
             .unwrap();
         crit_sect::locked(|cs| {
-            let data_option = &mut callback_data.borrow(cs).borrow_mut();
+            let data_option = &mut callback_data.borrow_mut(cs);
             let data = &mut data_option.as_mut().unwrap();
             func(cs, data)
         })
@@ -168,7 +166,6 @@ impl Rx {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// # fn main() {
-    ///   use core::cell::RefCell;
     ///   use nrf52840_hal::pac::Peripherals;
     ///   use nrf_radio::error::Error;
     ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
@@ -182,7 +179,7 @@ impl Rx {
     ///
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
-    ///   static mut TASKLET_QUEUE: Option<Mutex<RefCell<TaskletQueue>>> = None;
+    ///   static mut TASKLET_QUEUE: Option<Mutex<TaskletQueue>> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -190,7 +187,7 @@ impl Rx {
     ///   unsafe {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
-    ///     TASKLET_QUEUE.replace(Mutex::new(RefCell::new(TaskletQueue::new())));
+    ///     TASKLET_QUEUE.replace(Mutex::new(TaskletQueue::new()));
     ///   }
     ///
     ///   let rx;
@@ -291,8 +288,7 @@ impl Rx {
             defmt::info!("scheduling rx done notification");
             let prev_result = d.rx_result.replace(result);
             debug_assert!(prev_result.is_none());
-            let tasklet_queue: &mut TaskletQueue<'static> =
-                &mut d.tasklet_queue.borrow(cs).borrow_mut();
+            let tasklet_queue: &mut TaskletQueue<'static> = &mut d.tasklet_queue.borrow_mut(cs);
             // TODO: something safer than unwrap?
             tasklet_queue.push(d.receive_done_tasklet_ref.take().unwrap());
         }
