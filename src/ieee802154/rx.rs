@@ -226,38 +226,42 @@ impl Rx {
                 if let Ok(frame) = frame {
                     Rx::use_data_from_context(context, |d| {
                         // TODO: move filtering to a separated module
-                        let dst_pan_id = frame.get_dst_pan_id().unwrap();
-                        if let Some(dst_pan_id) = dst_pan_id {
-                            if dst_pan_id != d.pib.get_pan_id() && dst_pan_id != &BROADCAST_PAN_ID {
-                                notify_rx_done(d, Err(Error::NotMatchingPanId));
+                        if !d.pib.get_promiscuous() {
+                            let dst_pan_id = frame.get_dst_pan_id().unwrap();
+                            if let Some(dst_pan_id) = dst_pan_id {
+                                if dst_pan_id != d.pib.get_pan_id()
+                                    && dst_pan_id != &BROADCAST_PAN_ID
+                                {
+                                    notify_rx_done(d, Err(Error::NotMatchingPanId));
+                                    return;
+                                }
+                            } else {
+                                // TODO: Handle frames with missing dst pan id
                                 return;
                             }
-                        } else {
-                            // TODO: Handle frames with missing dst pan id
-                            return;
-                        }
 
-                        let dst_addr = frame.get_dst_address().unwrap();
-                        if let Some(dst_addr) = dst_addr {
-                            match dst_addr {
-                                Addr::Short(addr) => {
-                                    if addr != d.pib.get_short_addr()
-                                        && addr != &BROADCAST_SHORT_ADDR
-                                    {
-                                        notify_rx_done(d, Err(Error::NotMatchingAddress));
-                                        return;
+                            let dst_addr = frame.get_dst_address().unwrap();
+                            if let Some(dst_addr) = dst_addr {
+                                match dst_addr {
+                                    Addr::Short(addr) => {
+                                        if addr != d.pib.get_short_addr()
+                                            && addr != &BROADCAST_SHORT_ADDR
+                                        {
+                                            notify_rx_done(d, Err(Error::NotMatchingAddress));
+                                            return;
+                                        }
+                                    }
+                                    Addr::Ext(addr) => {
+                                        if addr != d.pib.get_ext_addr() {
+                                            notify_rx_done(d, Err(Error::NotMatchingAddress));
+                                            return;
+                                        }
                                     }
                                 }
-                                Addr::Ext(addr) => {
-                                    if addr != d.pib.get_ext_addr() {
-                                        notify_rx_done(d, Err(Error::NotMatchingAddress));
-                                        return;
-                                    }
-                                }
+                            } else {
+                                // TODO: Handle frames with missing dst address
+                                return;
                             }
-                        } else {
-                            // TODO: Handle frames with missing dst address
-                            return;
                         }
 
                         // TODO: Handle transmitting ACK
@@ -268,7 +272,11 @@ impl Rx {
                     });
                 } else {
                     Rx::use_data_from_context(context, |d| {
-                        notify_rx_done(d, Err(Error::InvalidFrame))
+                        if d.pib.get_promiscuous() {
+                            notify_rx_done(d, Ok(rx_ok.frame))
+                        } else {
+                            notify_rx_done(d, Err(Error::InvalidFrame))
+                        }
                     });
                 }
             }
@@ -283,6 +291,10 @@ impl Rx {
             defmt::info!("scheduling rx done notification");
             let prev_result = d.rx_result.replace(result);
             debug_assert!(prev_result.is_none());
+            // TODO: call the callback directly instead of using a tasklet, and let user to
+            //       decide in the callback to defer to tasklet?
+            //       I expect some users like async RX could prefer to restart RX from ISR context
+            //       to potentially catch more frames
             // TODO: something safer than unwrap?
             d.tasklet_queue
                 .push(d.receive_done_tasklet_ref.take().unwrap());

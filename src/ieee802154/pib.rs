@@ -9,6 +9,7 @@ pub struct Pib {
     panid: [u8; PANID_SIZE],
     short_addr: [u8; SHORT_ADDR_SIZE],
     ext_addr: [u8; EXT_ADDR_SIZE],
+    promiscuous: bool,
 }
 
 impl Pib {
@@ -29,6 +30,7 @@ impl Pib {
             panid: [0xff, 0xff],
             short_addr: [0xff, 0xff],
             ext_addr: [0x0; EXT_ADDR_SIZE],
+            promiscuous: false,
         }
     }
 
@@ -145,6 +147,38 @@ impl Pib {
     pub fn set_ext_addr(&mut self, ext_addr: &[u8; EXT_ADDR_SIZE]) {
         self.ext_addr = *ext_addr;
     }
+
+    /// Check if the promiscuous mode is set for this device
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nrf_radio::ieee802154::pib::Pib;
+    ///
+    /// let pib = Pib::new();
+    /// let promiscuous = pib.get_promiscuous();
+    /// assert_eq!(promiscuous, false);
+    /// ```
+    pub fn get_promiscuous(&self) -> bool {
+        self.promiscuous
+    }
+
+    /// Set the promiscuous mode for this device
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nrf_radio::ieee802154::pib::Pib;
+    ///
+    /// let mut pib = Pib::new();
+    ///
+    /// pib.set_promiscuous(true);
+    /// let promiscuous = pib.get_promiscuous();
+    /// assert_eq!(promiscuous, true);
+    /// ```
+    pub fn set_promiscuous(&mut self, promiscuous: bool) {
+        self.promiscuous = promiscuous;
+    }
 }
 
 impl Default for Pib {
@@ -170,6 +204,12 @@ mod tests {
     }
 
     #[test]
+    fn test_initial_promiscuous_mode_is_disabled() {
+        let pib = Pib::new();
+        assert_eq!(pib.get_promiscuous(), false);
+    }
+
+    #[test]
     fn test_pan_id_is_updateable() {
         let mut pib = Pib::new();
         let new_pan_id: [u8; 2] = [0x01, 0x23];
@@ -191,5 +231,12 @@ mod tests {
         let new_ext_addr: [u8; 8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
         pib.set_ext_addr(&new_ext_addr);
         assert_eq!(pib.get_ext_addr(), &new_ext_addr);
+    }
+
+    #[test]
+    fn test_promiscuous_mode_is_updateable() {
+        let mut pib = Pib::new();
+        pib.set_promiscuous(true);
+        assert_eq!(pib.get_promiscuous(), true);
     }
 }
