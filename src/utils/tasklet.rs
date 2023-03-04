@@ -14,7 +14,10 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
+//! # #[macro_use] extern crate nrf_radio;
+//! # missing_test_fns!();
+//! # fn main() {
 //! use nrf_radio::utils::tasklet::{Context, Tasklet, TaskletListItem, TaskletQueue};
 //!
 //! static mut TASKLET_EXECUTED: bool = false;
@@ -40,9 +43,12 @@
 //!   //         do so from this context
 //!   unsafe {TASKLET_EXECUTED = true};
 //! }
+//! # }
 //! ```
 
-use crate::utils::linked_list::{LinkedList, ListItem};
+use crate::crit_sect;
+use crate::mutex::Mutex;
+use crate::utils::linked_list::{LinkedList, ListItem, ListItemToken};
 use core::any::Any;
 use core::ops::{Deref, DerefMut};
 
@@ -57,26 +63,129 @@ pub type Context = &'static (dyn Any + Send + Sync);
 ///   same tasklet again
 /// * context selected by user when scheduling the tasklet
 pub type TaskletFn<'queue> = fn(&'queue mut TaskletListItem<'queue>, Context);
-/// Queue of tasklets
-pub type TaskletQueue<'queue> = LinkedList<'queue, TaskletData<'queue>>;
 
-impl TaskletQueue<'_> {
-    /// Run all tasklets scheduled in this queue
-    ///
-    /// Tasklets are executed in any order
+/// Queue of tasklets
+pub struct TaskletQueue<'queue>(Mutex<LinkedList<'queue, TaskletData<'queue>>>);
+
+impl<'queue> TaskletQueue<'queue> {
+    /// Create an empty queue for running tasklets
     ///
     /// # Examples
     ///
     /// ```
     /// use nrf_radio::utils::tasklet::TaskletQueue;
     ///
+    /// let queue = TaskletQueue::new();
+    /// ```
+    pub fn new() -> Self {
+        Self(Mutex::new(LinkedList::new()))
+    }
+
+    /// Add a new tasklet to the queue
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::utils::tasklet::{Tasklet, TaskletQueue, TaskletListItem, Context};
+    ///
+    /// let queue = TaskletQueue::new();
+    /// let mut tasklet = Tasklet::new(callback, &None::<bool>);
+    ///
+    /// queue.push(&mut tasklet);
+    ///
+    /// fn callback(_tasklet_ref: &mut TaskletListItem, _context: Context) {
+    ///     // Deferred job
+    /// }
+    /// # }
+    /// ```
+    pub fn push(
+        &self,
+        tasklet: &'queue mut ListItem<'queue, TaskletData<'queue>>,
+    ) -> ListItemToken<'queue, TaskletData<'queue>> {
+        crit_sect::locked(|cs| self.0.borrow_mut(cs).push(tasklet))
+    }
+
+    /// Get a tasklet from the head of the queue
+    fn pop(&self) -> Option<&'queue mut ListItem<'queue, TaskletData<'queue>>> {
+        crit_sect::locked(|cs| self.0.borrow_mut(cs).pop())
+    }
+
+    /// Get a mutable reference to a tasklet using a linked list token
+    ///
+    /// The token is obtained when the tasklet is pushed to the queue. This token can be used to
+    /// get back the mutable reference to the tasklet.
+    ///
+    /// # Safety
+    ///
+    /// Call this function only when you know that the tasklet represented by this token was already
+    /// removed from the queue (it's callback has already finished) and the reference to the
+    /// tasklet was dropped (the reference to the tasklet available in the callback was dropped).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::utils::tasklet::{Tasklet, TaskletQueue, TaskletListItem, Context};
+    ///
+    /// let queue = TaskletQueue::new();
+    /// let mut tasklet = Tasklet::new(callback, &None::<bool>);
+    ///
+    /// let token = queue.push(&mut tasklet);
+    ///
+    /// queue.run();
+    ///
+    /// // Safety: The queue containing the tasklet was run, so the callback has finished. And the
+    /// //         callback functions drops _tasklet_ref reference to the tasklet
+    /// unsafe {
+    ///   let tasklet_ref: &mut TaskletListItem = queue.get_unchecked(token);
+    ///   // Tasklet be modified now, or added again to the queue
+    /// }
+    ///
+    /// fn callback(_tasklet_ref: &mut TaskletListItem, _context: Context) {
+    ///     // Deferred job
+    ///
+    ///     // _tasklet_ref is dropped here
+    /// }
+    /// # }
+    /// ```
+    pub unsafe fn get_unchecked(
+        &self,
+        token: ListItemToken<'queue, TaskletData<'queue>>,
+    ) -> &'queue mut ListItem<'queue, TaskletData<'queue>> {
+        crit_sect::locked(|cs| self.0.borrow_mut(cs).get_unchecked(token))
+    }
+
+    /// Run all tasklets scheduled in this queue
+    ///
+    /// Tasklets are executed in any order
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::utils::tasklet::TaskletQueue;
+    ///
     /// let mut queue = TaskletQueue::new();
     /// queue.run();
+    /// # }
     /// ```
-    pub fn run(&mut self) {
+    pub fn run(&self) {
         while let Some(tasklet) = self.pop() {
             tasklet.run();
         }
+    }
+}
+
+impl Default for TaskletQueue<'_> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -101,7 +210,10 @@ impl<'tasklet> Tasklet<'tasklet> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
     /// use nrf_radio::utils::tasklet::{Context, Tasklet, TaskletListItem};
     ///
     /// let mut tasklet = Tasklet::new(tasklet_function, &None::<usize>);
@@ -109,6 +221,7 @@ impl<'tasklet> Tasklet<'tasklet> {
     /// fn tasklet_function(_list_item: &mut TaskletListItem, _context: Context) {
     ///   // Run defered action
     /// }
+    /// # }
     /// ```
     // TODO: This function should be const. Is it possible to make it?
     pub fn new(function: TaskletFn<'tasklet>, context: Context) -> Self {
@@ -126,8 +239,11 @@ impl<'tasklet> Tasklet<'tasklet> {
     /// The tasklet reference may be stored in a static variable so that it can be updated from the
     /// defered function
     ///
-    /// ```
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
     /// # #[macro_use] extern crate lazy_mut;
+    /// # missing_test_fns!();
+    /// # fn main() {
     /// use nrf_radio::utils::tasklet::{Context, Tasklet, TaskletListItem, TaskletQueue};
     ///
     /// lazy_mut! {
@@ -164,13 +280,17 @@ impl<'tasklet> Tasklet<'tasklet> {
     ///     // The borrowed tasklet is returned now and I store it to use it again soon
     ///     unsafe { TASKLET_REF = Some(tasklet_ref) };
     /// }
+    /// # }
     /// ```
     ///
     /// Alternatively unsafe
     /// [`get_unchecked()`](crate::utils::linked_list::LinkedList::get_unchecked) can be used to
     /// retrieve the tasklet reference after the tasklet is executed.
     ///
-    /// ```
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
     /// use nrf_radio::utils::tasklet::{Context, Tasklet, TaskletListItem, TaskletQueue};
     ///
     /// let mut tasklet = Tasklet::new(callback, &None::<bool>);
@@ -194,6 +314,7 @@ impl<'tasklet> Tasklet<'tasklet> {
     /// fn callback(_tasklet_ref: &mut TaskletListItem, _context: Context) {
     ///     // Run defered action
     /// }
+    /// # }
     /// ```
     pub fn as_mut_list_item(&mut self) -> &mut TaskletListItem<'tasklet> {
         self
@@ -226,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_run_empty_tasklet_queue() {
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         queue.run();
     }
 
@@ -237,7 +358,7 @@ mod tests {
             unsafe { CALLED = true };
         }
 
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         let mut tasklet = Tasklet::new(callback, &None::<bool>);
         queue.push(&mut tasklet);
 
@@ -259,7 +380,7 @@ mod tests {
             unsafe { TASKLET_REF = Some(tasklet_ref) };
         }
 
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         unsafe { TASKLET.init() };
         unsafe { TASKLET_REF = Some(TASKLET.as_mut_list_item()) };
 
@@ -279,7 +400,7 @@ mod tests {
             unsafe { CALL_CNT += 1 };
         }
 
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         let mut tasklet = Tasklet::new(callback, &None::<bool>);
         let mut tasklet_ref = tasklet.as_mut_list_item();
 
@@ -325,7 +446,7 @@ mod tests {
             *called = true;
         }
 
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         let mut tasklets = Vec::new();
 
         for i in 0..N {
@@ -352,7 +473,7 @@ mod tests {
             unsafe { CALL_CNT += 1 };
         }
 
-        let mut queue = TaskletQueue::new();
+        let queue = TaskletQueue::new();
         let mut tasklet = Tasklet::new(callback, &None::<bool>);
         queue.push(&mut tasklet);
 
