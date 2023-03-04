@@ -12,11 +12,9 @@ use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
 use crate::ieee802154::frame::{Addr, Frame};
 use crate::ieee802154::pib::Pib;
+use crate::mutex::Mutex;
 use crate::radio::{Context, Phy, RxOk};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
-
-use crate::crit_sect::CriticalSection;
-use crate::mutex::Mutex;
 
 const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
 const BROADCAST_SHORT_ADDR: [u8; 2] = [0xff, 0xff];
@@ -36,7 +34,7 @@ struct CallbackData {
     //       But on the other hand, running tasklets cannot be from critical section
     //       Probably something around TaskletQueue should be changes so that it does not require
     //       mutability
-    tasklet_queue: &'static Mutex<TaskletQueue<'static>>,
+    tasklet_queue: &'static TaskletQueue<'static>,
 
     rx_result: Option<Result<FrameBuffer<'static>, Error>>,
     receive_done_tasklet: Tasklet<'static>,
@@ -59,7 +57,6 @@ impl Rx {
     /// # missing_test_fns!();
     /// # fn main() {
     ///   use nrf52840_hal::pac::Peripherals;
-    ///   use nrf_radio::mutex::Mutex;
     ///   use nrf_radio::ieee802154::pib::Pib;
     ///   use nrf_radio::ieee802154::rx::Rx;
     ///   use nrf_radio::radio::Phy;
@@ -67,7 +64,7 @@ impl Rx {
     ///
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
-    ///   static mut TASKLET_QUEUE: Option<Mutex<TaskletQueue>> = None;
+    ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -75,7 +72,7 @@ impl Rx {
     ///   unsafe {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
-    ///     TASKLET_QUEUE.replace(Mutex::new(TaskletQueue::new()));
+    ///     TASKLET_QUEUE.replace(TaskletQueue::new());
     ///
     ///     let rx = Rx::new(PHY.as_ref().unwrap(), &PIB, TASKLET_QUEUE.as_ref().unwrap());
     ///   }
@@ -85,7 +82,7 @@ impl Rx {
     pub fn new(
         phy: &'static Phy,
         pib: &'static Pib,
-        tasklet_queue: &'static Mutex<TaskletQueue<'static>>,
+        tasklet_queue: &'static TaskletQueue<'static>,
     ) -> Self {
         let new_callback_data = CallbackData {
             phy,
@@ -130,7 +127,7 @@ impl Rx {
     /// Helper function to get access to the callback data retrieved from Context
     fn use_data_from_context<F, R>(context: Context, func: F) -> R
     where
-        F: FnOnce(&CriticalSection, &mut CallbackData) -> R,
+        F: FnOnce(&mut CallbackData) -> R,
     {
         let callback_data = context
             .downcast_ref::<Mutex<Option<CallbackData>>>()
@@ -138,7 +135,7 @@ impl Rx {
         crit_sect::locked(|cs| {
             let data_option = &mut callback_data.borrow_mut(cs);
             let data = &mut data_option.as_mut().unwrap();
-            func(cs, data)
+            func(data)
         })
     }
 
@@ -171,7 +168,6 @@ impl Rx {
     ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     ///   use nrf_radio::frm_mem_mng::frame_buffer::FrameBuffer;
     ///   use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
-    ///   use nrf_radio::mutex::Mutex;
     ///   use nrf_radio::ieee802154::pib::Pib;
     ///   use nrf_radio::ieee802154::rx::Rx;
     ///   use nrf_radio::radio::Phy;
@@ -179,7 +175,7 @@ impl Rx {
     ///
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
-    ///   static mut TASKLET_QUEUE: Option<Mutex<TaskletQueue>> = None;
+    ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -187,7 +183,7 @@ impl Rx {
     ///   unsafe {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
-    ///     TASKLET_QUEUE.replace(Mutex::new(TaskletQueue::new()));
+    ///     TASKLET_QUEUE.replace(TaskletQueue::new());
     ///   }
     ///
     ///   let rx;
@@ -224,73 +220,72 @@ impl Rx {
 
     fn phy_callback(result: Result<RxOk, Error>, context: Context) {
         defmt::info!("rx callback");
-        if let Ok(rx_ok) = result {
-            let frame = Frame::from_frame_buffer(&rx_ok.frame);
-            if let Ok(frame) = frame {
-                Rx::use_data_from_context(context, |cs, d| {
-                    // TODO: move filtering to a separated module
-                    let dst_pan_id = frame.get_dst_pan_id().unwrap();
-                    if let Some(dst_pan_id) = dst_pan_id {
-                        if dst_pan_id != d.pib.get_pan_id() && dst_pan_id != &BROADCAST_PAN_ID {
-                            notify_rx_done(cs, d, Err(Error::NotMatchingPanId));
+        match result {
+            Ok(rx_ok) => {
+                let frame = Frame::from_frame_buffer(&rx_ok.frame);
+                if let Ok(frame) = frame {
+                    Rx::use_data_from_context(context, |d| {
+                        // TODO: move filtering to a separated module
+                        let dst_pan_id = frame.get_dst_pan_id().unwrap();
+                        if let Some(dst_pan_id) = dst_pan_id {
+                            if dst_pan_id != d.pib.get_pan_id() && dst_pan_id != &BROADCAST_PAN_ID {
+                                notify_rx_done(d, Err(Error::NotMatchingPanId));
+                                return;
+                            }
+                        } else {
+                            // TODO: Handle frames with missing dst pan id
                             return;
                         }
-                    } else {
-                        // TODO: Handle frames with missing dst pan id
-                        return;
-                    }
 
-                    let dst_addr = frame.get_dst_address().unwrap();
-                    if let Some(dst_addr) = dst_addr {
-                        match dst_addr {
-                            Addr::Short(addr) => {
-                                if addr != d.pib.get_short_addr() && addr != &BROADCAST_SHORT_ADDR {
-                                    notify_rx_done(cs, d, Err(Error::NotMatchingAddress));
-                                    return;
+                        let dst_addr = frame.get_dst_address().unwrap();
+                        if let Some(dst_addr) = dst_addr {
+                            match dst_addr {
+                                Addr::Short(addr) => {
+                                    if addr != d.pib.get_short_addr()
+                                        && addr != &BROADCAST_SHORT_ADDR
+                                    {
+                                        notify_rx_done(d, Err(Error::NotMatchingAddress));
+                                        return;
+                                    }
+                                }
+                                Addr::Ext(addr) => {
+                                    if addr != d.pib.get_ext_addr() {
+                                        notify_rx_done(d, Err(Error::NotMatchingAddress));
+                                        return;
+                                    }
                                 }
                             }
-                            Addr::Ext(addr) => {
-                                if addr != d.pib.get_ext_addr() {
-                                    notify_rx_done(cs, d, Err(Error::NotMatchingAddress));
-                                    return;
-                                }
-                            }
+                        } else {
+                            // TODO: Handle frames with missing dst address
+                            return;
                         }
-                    } else {
-                        // TODO: Handle frames with missing dst address
-                        return;
-                    }
 
-                    // TODO: Handle transmitting ACK
-                    // TODO: Handle transmitting ACK after relevant fields are received
-                    //       (src addr, security?)
-                    // TODO: Report received frame for us (after ACK transmitted?)!
-                    notify_rx_done(cs, d, Ok(rx_ok.frame));
-                });
-            } else {
-                // TODO: Notify invalid frame
-                //notify_rx_done(cs, d, Err(Error::Invalidframe));
-                defmt::info!("invalid frame");
+                        // TODO: Handle transmitting ACK
+                        // TODO: Handle transmitting ACK after relevant fields are received
+                        //       (src addr, security?)
+                        // TODO: Report received frame for us (after ACK transmitted?)!
+                        notify_rx_done(d, Ok(rx_ok.frame));
+                    });
+                } else {
+                    Rx::use_data_from_context(context, |d| {
+                        notify_rx_done(d, Err(Error::InvalidFrame))
+                    });
+                }
             }
-        } else {
-            // TODO: Use error returned by Phy
-            //notify_rx_done(cs, d, Err(Error::PhyError));
-            defmt::info!("Phy error");
+            Err(e) => {
+                Rx::use_data_from_context(context, |d| notify_rx_done(d, Err(e)));
+            }
         }
 
         // TODO: move filtering to callbacks called while the frame is being received
 
-        fn notify_rx_done(
-            cs: &CriticalSection,
-            d: &mut CallbackData,
-            result: Result<FrameBuffer<'static>, Error>,
-        ) {
+        fn notify_rx_done(d: &mut CallbackData, result: Result<FrameBuffer<'static>, Error>) {
             defmt::info!("scheduling rx done notification");
             let prev_result = d.rx_result.replace(result);
             debug_assert!(prev_result.is_none());
-            let tasklet_queue: &mut TaskletQueue<'static> = &mut d.tasklet_queue.borrow_mut(cs);
             // TODO: something safer than unwrap?
-            tasklet_queue.push(d.receive_done_tasklet_ref.take().unwrap());
+            d.tasklet_queue
+                .push(d.receive_done_tasklet_ref.take().unwrap());
         }
     }
 
@@ -298,7 +293,7 @@ impl Rx {
         let mut callback = None;
         let mut rx_result = None;
 
-        Rx::use_data_from_context(context, |_cs, d| {
+        Rx::use_data_from_context(context, |d| {
             d.receive_done_tasklet_ref.replace(tasklet_ref);
             callback = d.receive_done_callback.take();
             rx_result = d.rx_result.take();
