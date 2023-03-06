@@ -5,6 +5,9 @@
 
 use crate::error::Error;
 
+#[cfg(test)]
+use mockall::*;
+
 /// Allocates channels used to connect peripherals' events with tasks
 pub trait Allocator {
     /// Allocate new channel
@@ -18,30 +21,31 @@ pub trait Allocator {
 /// TODO: How can I implement `Channel`?
 ///
 /// TODO: Example publishing and subscribing?
+#[cfg_attr(test, automock)]
 pub trait Channel {
     /// Register an event to publish to this channel
     ///
     /// All events must be deregistered by user of this channel before the channel is dropped.
     ///
     /// TODO: Example
-    fn publish_by<T>(&self, event_reg: *const T) -> Result<(), Error>;
+    fn publish_by<T: 'static>(&self, event_reg: *const T) -> Result<(), Error>;
 
     /// Deregister an event publishing to this channel
     ///
     /// TODO: Example
-    fn stop_publishing_by<T>(&self, event_reg: *const T) -> Result<(), Error>;
+    fn stop_publishing_by<T: 'static>(&self, event_reg: *const T) -> Result<(), Error>;
 
     /// Register a task to subscribe to this channel
     ///
     /// All tasks must be deregistered by user of this channel before the channel is dropped.
     ///
     /// TODO: Example
-    fn subscribe_by<T>(&self, task_reg: *const T) -> Result<(), Error>;
+    fn subscribe_by<T: 'static>(&self, task_reg: *const T) -> Result<(), Error>;
 
     /// Deregister a task subscribing to this channel
     ///
     /// TODO: Example
-    fn stop_subscribing_by<T>(&self, task_reg: *const T) -> Result<(), Error>;
+    fn stop_subscribing_by<T: 'static>(&self, task_reg: *const T) -> Result<(), Error>;
 
     /// Enable this channel
     ///
