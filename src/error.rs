@@ -5,6 +5,8 @@ pub enum Error {
     WouldBlock,
     /// Not enough available memory
     NoMemory,
+    /// No free resources
+    NoResources,
     /// The passed buffer cannot contain all necessary data
     TooSmallBuffer,
     /// The received frame is invalid

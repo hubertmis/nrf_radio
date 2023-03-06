@@ -14,6 +14,7 @@
 extern crate lazy_mut;
 
 pub mod crit_sect; // Temporary pub, to support sharing tasklets
+pub mod hw;
 pub mod ieee802154;
 pub mod mutex; // temporary pub, to support sharing tasklets
 pub mod utils; // Temporary make utils public to allow simulating "higher layers" in external
