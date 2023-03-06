@@ -200,7 +200,6 @@ impl Drop for PpiChannel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     // PPI peripheral mock
     #[repr(align(4))]
@@ -258,7 +257,7 @@ mod tests {
         }
 
         for _ in 0..NUM_CHANNELS {
-            let channel = allocator.allocate_channel().unwrap();
+            let _channel = allocator.allocate_channel().unwrap();
             // Channel is dropped immediately
         }
 
