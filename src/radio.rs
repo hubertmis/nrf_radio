@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::hw::ppi::{self, traits::Channel};
 use crate::mutex::Mutex;
 use core::any::Any;
 use core::ops::Deref;
@@ -57,7 +58,19 @@ pub struct RxOk {
 }
 
 /// Type of the callback function called when the requested RX operation is completed
-pub type RxCallback = fn(Result<RxOk, Error>, Context);
+pub type RxCallback = fn(Result<RxOk, Error>, Context, &mut RxResources);
+
+/// Resrouces being returned to the caller in RxCallback function
+pub struct RxResources {
+    phyend_ppi_channel: Option<ppi::Channel>,
+}
+
+impl RxResources {
+    /// Get PPI channel borrowed to be triggered at the PHYEND event
+    pub fn get_phyend_ppi_channel(&mut self) -> Option<ppi::Channel> {
+        self.phyend_ppi_channel.take()
+    }
+}
 
 //type Timestamp = u64;
 enum OperationStartType {
@@ -67,6 +80,7 @@ enum OperationStartType {
 
 struct RxFsmModifiers {
     start_type: Option<OperationStartType>,
+    phyend_ppi_channel: Option<ppi::Channel>,
 }
 
 /// Defines RX operation to be requested
@@ -84,9 +98,9 @@ struct RxFsmModifiers {
 /// use nrf_radio::error::Error;
 /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
 /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
-/// use nrf_radio::radio::{Context, RxOk, RxRequest};
+/// use nrf_radio::radio::{Context, RxOk, RxRequest, RxResources};
 ///
-/// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+/// fn rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
 ///   // Do something with the RX operation result
 /// }
 ///
@@ -112,6 +126,8 @@ impl RxRequest {
     /// is valid. Alternatively it is [`Err(Error)`](Error) if the received frame is invalid.
     /// The `context` argument is blindly copied to the `callback` function as its `context`
     /// parameter. The caller can use `context` to match callbacks with reception requests.
+    /// The `resources` argument returns resources that were borrowed to the `Phy` module to
+    /// proceed with the requested RX operation.
     ///
     /// When the callback is called the receiver is not enabled anymore.
     ///
@@ -127,9 +143,9 @@ impl RxRequest {
     /// use nrf_radio::error::Error;
     /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
-    /// use nrf_radio::radio::{Context, RxOk, RxRequest};
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest, RxResources};
     ///
-    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
     ///   // Do something with the RX operation result
     /// }
     ///
@@ -144,8 +160,60 @@ impl RxRequest {
             buffer,
             callback,
             context,
-            fsm_mod: RxFsmModifiers { start_type: None },
+            fsm_mod: RxFsmModifiers {
+                start_type: None,
+                phyend_ppi_channel: None,
+            },
         }
+    }
+
+    /// Publishes to given PPI channel on the PHYEND event
+    ///
+    /// When received frame generates a PHYEND event in the RADIO peripheral, the peripheral
+    /// publishes to passed PPI channel. This feature can be used to capture timestamp of the
+    /// received frame.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::hw::ppi::{self, traits::Allocator};
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest, RxResources};
+    ///
+    /// use nrf52840_hal::pac::Peripherals;
+    ///
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// // Allocate frame buffer
+    /// let buffer_allocator = SingleFrameAllocator::new();
+    /// let frame_buffer = buffer_allocator.get_frame().unwrap();
+    ///
+    /// // Allocate PPI channel
+    /// let peripherals = Peripherals::take().unwrap();
+    /// let ppi_allocator;
+    ///
+    /// static mut PPI_ALLOCATOR: Option<ppi::Allocator> = None;
+    /// unsafe {
+    ///   PPI_ALLOCATOR = Some(ppi::Allocator::new(&peripherals.PPI));
+    ///   ppi_allocator = PPI_ALLOCATOR.as_ref().unwrap();
+    /// }
+    ///
+    /// let ppi_channel = ppi_allocator.allocate_channel().unwrap();
+    ///
+    /// let complete_request = RxRequest::new(frame_buffer, rx_callback, &None::<usize>)
+    ///                                   .with_ppi_channel_on_phyend(ppi_channel);
+    /// # }
+    /// ```
+    pub fn with_ppi_channel_on_phyend(mut self, ppi_channel: ppi::Channel) -> Self {
+        self.fsm_mod.phyend_ppi_channel = Some(ppi_channel);
+        self
     }
 
     /*
@@ -170,9 +238,9 @@ impl RxRequest {
     /// use nrf_radio::error::Error;
     /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
-    /// use nrf_radio::radio::{Context, RxOk, RxRequest};
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest, RxResources};
     ///
-    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
     ///   // Do something with the RX operation result
     /// }
     ///
@@ -509,6 +577,11 @@ impl Phy {
             .events_crcerror
             .write(|w| w.events_crcerror().clear_bit());
 
+        if let Some(phyend_ch) = &fsm_mod.phyend_ppi_channel {
+            let result = phyend_ch.publish_by(&i.radio.events_phyend as *const _);
+            debug_assert!(result.is_ok());
+        }
+
         match fsm_mod.start_type {
             Some(OperationStartType::Now) => i.radio.tasks_rxen.write(|w| w.tasks_rxen().set_bit()),
             None => panic!("Checked that start_type is Some() while validating arguemtns"),
@@ -522,7 +595,12 @@ impl Phy {
     }
 
     /// FSM procedure on exitting RX state
-    fn exit_rx(_fsm_mod: &RxFsmModifiers, i: &mut IsrData) {
+    fn exit_rx(fsm_mod: &RxFsmModifiers, i: &mut IsrData) {
+        if let Some(phyend_ch) = &fsm_mod.phyend_ppi_channel {
+            let result = phyend_ch.stop_publishing_by(&i.radio.events_phyend as *const _);
+            debug_assert!(result.is_ok());
+        }
+
         i.radio
             .intenclr
             .write(|w| w.crcok().set_bit().crcerror().set_bit());
@@ -541,12 +619,16 @@ impl Phy {
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// use nrf52840_hal::pac::Peripherals;
-    /// use nrf_radio::radio::{Phy, RxOk, RxRequest, Context};
+    /// use nrf_radio::radio::{Phy, RxOk, RxRequest, Context, RxResources};
     /// use nrf_radio::error::Error;
     /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::hw::ppi;
     ///
-    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+    /// fn rx_callback(result: Result<RxOk, Error>,
+    ///                context: Context,
+    ///                returned_resources: &mut RxResources)
+    /// {
     ///   match result {
     ///     Ok(rx_ok) => {
     ///       println!("Received frame: {:x?}", rx_ok.frame);
@@ -601,7 +683,7 @@ fn irq_handler() {
     enum Callback {
         None,
         Tx(TxCallback, Context),
-        Rx(RxCallback, Context, Result<RxOk, Error>),
+        Rx(RxCallback, Context, Result<RxOk, Error>, RxResources),
     }
 
     let mut callback = Callback::None;
@@ -610,7 +692,11 @@ fn irq_handler() {
         let mut i = ISR_DATA.borrow_mut(cs).take().unwrap();
 
         match i.state {
-            State::Rx(rx_data) => {
+            State::Rx(mut rx_data) => {
+                let resources = RxResources {
+                    phyend_ppi_channel: None,
+                };
+
                 if i.radio.events_crcok.read().events_crcok().bit_is_set() {
                     i.radio.events_crcok.write(|w| w.events_crcok().clear_bit());
 
@@ -620,6 +706,7 @@ fn irq_handler() {
                         Ok(RxOk {
                             frame: rx_data.request.buffer,
                         }),
+                        resources,
                     );
                 } else if i
                     .radio
@@ -636,6 +723,7 @@ fn irq_handler() {
                         rx_data.request.callback,
                         rx_data.request.context,
                         Err(Error::IncorrectCrc),
+                        resources,
                     );
                 } else {
                     panic!("Unexpected event received in Rx state");
@@ -643,6 +731,11 @@ fn irq_handler() {
 
                 i.state = State::Idle;
                 Phy::exit_rx(&rx_data.request.fsm_mod, &mut i);
+
+                if let Callback::Rx(_, _, _, ref mut resources) = callback {
+                    resources.phyend_ppi_channel =
+                        rx_data.request.fsm_mod.phyend_ppi_channel.take();
+                }
             }
 
             State::Tx(tx_data) => {
@@ -669,7 +762,9 @@ fn irq_handler() {
 
     match callback {
         Callback::None => (),
-        Callback::Rx(callback, context, result) => callback(result, context),
+        Callback::Rx(callback, context, result, mut resources) => {
+            callback(result, context, &mut resources)
+        }
         Callback::Tx(callback, context) => callback(Ok(()), context),
     };
 }
@@ -827,7 +922,7 @@ mod tests {
         static mut CALLED: bool = false;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(_result: Result<RxOk, Error>, _context: Context) {
+        fn callback(_result: Result<RxOk, Error>, _context: Context, _resources: &mut RxResources) {
             unsafe { CALLED = true };
         }
 
@@ -873,7 +968,7 @@ mod tests {
         static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(result: Result<RxOk, Error>, _context: Context) {
+        fn callback(result: Result<RxOk, Error>, _context: Context, _resources: &mut RxResources) {
             unsafe { CALLED = true };
             unsafe { RECEIVED_RESULT = Some(result) };
         }
@@ -921,7 +1016,7 @@ mod tests {
         static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn callback(result: Result<RxOk, Error>, _context: Context) {
+        fn callback(result: Result<RxOk, Error>, _context: Context, _resources: &mut RxResources) {
             unsafe { CALLED = true };
             unsafe { RECEIVED_RESULT = Some(result) };
         }
@@ -960,7 +1055,11 @@ mod tests {
         static mut RX_CALLED: bool = false;
         static mut FRAME: [u8; 128] = [0; 128];
 
-        fn rx_callback(_result: Result<RxOk, Error>, _context: Context) {
+        fn rx_callback(
+            _result: Result<RxOk, Error>,
+            _context: Context,
+            _resources: &mut RxResources,
+        ) {
             unsafe { RX_CALLED = true };
         }
 
@@ -1024,7 +1123,11 @@ mod tests {
 
         static mut RX_CALLED: bool = false;
 
-        fn rx_callback(_result: Result<RxOk, Error>, _context: Context) {
+        fn rx_callback(
+            _result: Result<RxOk, Error>,
+            _context: Context,
+            _resources: &mut RxResources,
+        ) {
             unsafe { RX_CALLED = true };
         }
 

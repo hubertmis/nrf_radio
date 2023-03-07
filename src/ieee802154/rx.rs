@@ -10,10 +10,15 @@
 use crate::crit_sect;
 use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
+use crate::hw::ppi::{
+    self,
+    traits::{Allocator, Channel},
+};
+use crate::hw::timer::Timer;
 use crate::ieee802154::frame::{Addr, Frame};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
-use crate::radio::{Context, Phy, RxOk, RxRequest};
+use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
@@ -21,22 +26,19 @@ const BROADCAST_SHORT_ADDR: [u8; 2] = [0xff, 0xff];
 
 // TODO: context as an argument?
 /// Signature of a callback function called when the requested receive operation is finished
-pub type RxDoneCallback = fn(Result<FrameBuffer, Error>);
+pub type RxDoneCallback = fn(Result<(FrameBuffer, u64), Error>);
 
 // Callbacks are to be called from IRQs. That's why it require static data
 static CALLBACK_DATA: Mutex<Option<CallbackData>> = Mutex::new(None);
 
 struct CallbackData {
     phy: &'static Phy,
+    timer: &'static dyn Timer<ppi::Channel>,
     pib: &'static Pib,
-    // TODO: Some other wrapper than mutex
-    //       Or maybe mutex is correct to avoid taskletqueue modification while it is run
-    //       But on the other hand, running tasklets cannot be from critical section
-    //       Probably something around TaskletQueue should be changes so that it does not require
-    //       mutability
+    ppi_allocator: &'static ppi::Allocator,
     tasklet_queue: &'static TaskletQueue<'static>,
 
-    rx_result: Option<Result<FrameBuffer<'static>, Error>>,
+    rx_result: Option<Result<(FrameBuffer<'static>, u64), Error>>,
     receive_done_tasklet: Tasklet<'static>,
     receive_done_tasklet_ref: Option<&'static mut TaskletListItem<'static>>,
     receive_done_callback: Option<RxDoneCallback>,
@@ -57,6 +59,8 @@ impl Rx {
     /// # missing_test_fns!();
     /// # fn main() {
     ///   use nrf52840_hal::pac::Peripherals;
+    ///   use nrf_radio::hw::ppi::legacy_ppi::PpiAllocator;
+    ///   use nrf_radio::hw::timer::timer_using_timer::TimerUsingTimer;
     ///   use nrf_radio::ieee802154::pib::Pib;
     ///   use nrf_radio::ieee802154::rx::Rx;
     ///   use nrf_radio::radio::Phy;
@@ -65,6 +69,8 @@ impl Rx {
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
     ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
+    ///   static mut PPI_ALLOC: Option<PpiAllocator> = None;
+    ///   static mut TIMER: Option<TimerUsingTimer> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -73,8 +79,15 @@ impl Rx {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
     ///     TASKLET_QUEUE.replace(TaskletQueue::new());
+    ///     PPI_ALLOC.replace(PpiAllocator::new(&peripherals.PPI));
+    ///     TIMER.replace(TimerUsingTimer::new(&peripherals.TIMER0));
     ///
-    ///     let rx = Rx::new(PHY.as_ref().unwrap(), &PIB, TASKLET_QUEUE.as_ref().unwrap());
+    ///     let rx = Rx::new(PHY.as_ref().unwrap(),
+    ///                      &PIB,
+    ///                      TASKLET_QUEUE.as_ref().unwrap(),
+    ///                      PPI_ALLOC.as_ref().unwrap(),
+    ///                      TIMER.as_ref().unwrap(),
+    ///                     );
     ///   }
     ///
     /// # }
@@ -83,11 +96,15 @@ impl Rx {
         phy: &'static Phy,
         pib: &'static Pib,
         tasklet_queue: &'static TaskletQueue<'static>,
+        ppi_allocator: &'static ppi::Allocator,
+        timer: &'static dyn Timer<ppi::Channel>,
     ) -> Self {
         let new_callback_data = CallbackData {
             phy,
             pib,
             tasklet_queue,
+            ppi_allocator,
+            timer,
             rx_result: None,
             receive_done_tasklet: Tasklet::new(Rx::receive_done_tasklet_fn, &CALLBACK_DATA),
             receive_done_tasklet_ref: None,
@@ -168,6 +185,8 @@ impl Rx {
     ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     ///   use nrf_radio::frm_mem_mng::frame_buffer::FrameBuffer;
     ///   use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    ///   use nrf_radio::hw::ppi::Allocator;
+    ///   use nrf_radio::hw::timer::timer_using_timer::TimerUsingTimer;
     ///   use nrf_radio::ieee802154::pib::Pib;
     ///   use nrf_radio::ieee802154::rx::Rx;
     ///   use nrf_radio::radio::Phy;
@@ -176,6 +195,8 @@ impl Rx {
     ///   static mut PHY: Option<Phy> = None;
     ///   static PIB: Pib = Pib::new();
     ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
+    ///   static mut PPI_ALLOC: Option<Allocator> = None;
+    ///   static mut TIMER: Option<TimerUsingTimer> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -184,12 +205,19 @@ impl Rx {
     ///     PHY.replace(Phy::new(&peripherals.RADIO));
     ///     PHY.as_ref().unwrap().configure_802154();
     ///     TASKLET_QUEUE.replace(TaskletQueue::new());
+    ///     PPI_ALLOC.replace(Allocator::new(&peripherals.PPI));
+    ///     TIMER.replace(TimerUsingTimer::new(&peripherals.TIMER0));
     ///   }
     ///
     ///   let rx;
     ///   // Safety: at this point no other module has access to static variables
     ///   unsafe {
-    ///     rx = Rx::new(PHY.as_ref().unwrap(), &PIB, TASKLET_QUEUE.as_ref().unwrap());
+    ///     rx = Rx::new(PHY.as_ref().unwrap(),
+    ///                  &PIB,
+    ///                  TASKLET_QUEUE.as_ref().unwrap(),
+    ///                  PPI_ALLOC.as_ref().unwrap(),
+    ///                  TIMER.as_ref().unwrap(),
+    ///                 );
     ///   }
     ///
     ///   let frame_allocator = SingleFrameAllocator::new();
@@ -197,9 +225,9 @@ impl Rx {
     ///
     ///   let result = rx.start(frame_buffer, rx_done_callback);
     ///
-    ///   fn rx_done_callback(result: Result<FrameBuffer, Error>) {
+    ///   fn rx_done_callback(result: Result<(FrameBuffer, u64), Error>) {
     ///     match result {
-    ///       Ok(frame) => { /* Do something with received frame */ },
+    ///       Ok((frame, timestamp)) => { /* Do something with received frame */ },
     ///       Err(Error::InvalidFrame) => { /* Handle error */ },
     ///       Err(_) => { /* Handle other errors */ },
     ///     }
@@ -213,14 +241,32 @@ impl Rx {
     ) -> Result<(), Error> {
         // TODO: return error if already receiving
         self.use_data(|d| {
+            let ppi_ch = d.ppi_allocator.allocate_channel()?;
+
             d.receive_done_callback = Some(rx_done_callback);
-            d.phy
-                .rx(RxRequest::new(rx_buffer, Rx::phy_callback, self.callback_data).now())
+            let result = d.timer.start_capturing_timestamps(&ppi_ch);
+            debug_assert!(result.is_ok());
+            ppi_ch.enable();
+            d.phy.rx(
+                RxRequest::new(rx_buffer, Rx::phy_callback, self.callback_data)
+                    .with_ppi_channel_on_phyend(ppi_ch)
+                    .now(),
+            )
         })
     }
 
-    fn phy_callback(result: Result<RxOk, Error>, context: Context) {
+    fn phy_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
         defmt::info!("rx callback");
+
+        if let Some(ppi_ch) = resources.get_phyend_ppi_channel() {
+            Rx::use_data_from_context(context, |d| {
+                ppi_ch.disable();
+                let result = d.timer.stop_capturing_timestamps(&ppi_ch);
+                debug_assert!(result.is_ok());
+            });
+            drop(ppi_ch);
+        }
+
         match result {
             Ok(rx_ok) => {
                 let frame = Frame::from_frame_buffer(&rx_ok.frame);
@@ -269,12 +315,15 @@ impl Rx {
                         // TODO: Handle transmitting ACK after relevant fields are received
                         //       (src addr, security?)
                         // TODO: Report received frame for us (after ACK transmitted?)!
-                        notify_rx_done(d, Ok(rx_ok.frame));
+                        notify_rx_done(d, Ok((rx_ok.frame, d.timer.timestamp().unwrap().into())));
                     });
                 } else {
                     Rx::use_data_from_context(context, |d| {
                         if d.pib.get_promiscuous() {
-                            notify_rx_done(d, Ok(rx_ok.frame))
+                            notify_rx_done(
+                                d,
+                                Ok((rx_ok.frame, d.timer.timestamp().unwrap().into())),
+                            )
                         } else {
                             notify_rx_done(d, Err(Error::InvalidFrame))
                         }
@@ -288,7 +337,10 @@ impl Rx {
 
         // TODO: move filtering to callbacks called while the frame is being received
 
-        fn notify_rx_done(d: &mut CallbackData, result: Result<FrameBuffer<'static>, Error>) {
+        fn notify_rx_done(
+            d: &mut CallbackData,
+            result: Result<(FrameBuffer<'static>, u64), Error>,
+        ) {
             defmt::info!("scheduling rx done notification");
             let prev_result = d.rx_result.replace(result);
             debug_assert!(prev_result.is_none());
