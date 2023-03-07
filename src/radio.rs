@@ -59,11 +59,140 @@ pub struct RxOk {
 /// Type of the callback function called when the requested RX operation is completed
 pub type RxCallback = fn(Result<RxOk, Error>, Context);
 
-/// Internal data required in the RX state
-struct RxData {
+//type Timestamp = u64;
+enum OperationStartType {
+    Now,
+    //AtTimestamp(Timestamp),
+}
+
+struct RxFsmModifiers {
+    start_type: Option<OperationStartType>,
+}
+
+/// Defines RX operation to be requested
+///
+/// User-friendly interface to flexibly select optional features of RX operation. In the simplest
+/// usage only the arguments mandatory for each RX operation are passed. In more complex scenarios
+/// optional methods can be chained to enable more sophisticated RX features
+///
+/// # Example
+///
+/// ```no_run
+/// # #[macro_use] extern crate nrf_radio;
+/// # missing_test_fns!();
+/// # fn main() {
+/// use nrf_radio::error::Error;
+/// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+/// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+/// use nrf_radio::radio::{Context, RxOk, RxRequest};
+///
+/// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+///   // Do something with the RX operation result
+/// }
+///
+/// let buffer_allocator = SingleFrameAllocator::new();
+/// let request = RxRequest::new(buffer_allocator.get_frame().unwrap(),
+///                              rx_callback,
+///                              &None::<usize>)
+///                          .now();
+/// # }
+/// ```
+pub struct RxRequest {
+    buffer: FrameBuffer<'static>,
     callback: RxCallback,
     context: Context,
-    rx_buffer: FrameBuffer<'static>,
+    fsm_mod: RxFsmModifiers,
+}
+
+impl RxRequest {
+    /// Creates RX operation request with mandatory data
+    ///
+    /// After a frame is received the `callback` function is called from an ISR context. The
+    /// `result` parameter of the `callback` function is [`Ok(RxOk)`](RxOk) if the received frame
+    /// is valid. Alternatively it is [`Err(Error)`](Error) if the received frame is invalid.
+    /// The `context` argument is blindly copied to the `callback` function as its `context`
+    /// parameter. The caller can use `context` to match callbacks with reception requests.
+    ///
+    /// When the callback is called the receiver is not enabled anymore.
+    ///
+    /// The `buffer` is returned to the caller through `callback` when received a valid frame.
+    /// The `buffer` is dropped on any error.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest};
+    ///
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// let buffer_allocator = SingleFrameAllocator::new();
+    /// let initial_request = RxRequest::new(buffer_allocator.get_frame().unwrap(),
+    ///                                      rx_callback,
+    ///                                      &None::<usize>);
+    /// # }
+    /// ```
+    pub fn new(buffer: FrameBuffer<'static>, callback: RxCallback, context: Context) -> Self {
+        Self {
+            buffer,
+            callback,
+            context,
+            fsm_mod: RxFsmModifiers { start_type: None },
+        }
+    }
+
+    /*
+    pub fn at_timestamp(mut self, timestamp: Timestamp) -> Self {
+        self.fsm_mod.start_type = Some(OperationStartType::AtTimestamp(timestamp));
+        self
+    }
+    */
+
+    /// Marks passed request to be started now
+    ///
+    /// RX request may be started as soon as possible (now), or it might be deferred to be started
+    /// by a hardware event (potentially using a hardware task). This function select that passed
+    /// request is to be started now.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest};
+    ///
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// let buffer_allocator = SingleFrameAllocator::new();
+    /// let complete_request = RxRequest::new(buffer_allocator.get_frame().unwrap(),
+    ///                                       rx_callback,
+    ///                                       &None::<usize>)
+    ///                                   .now();
+    /// # }
+    /// ```
+    pub fn now(mut self) -> Self {
+        debug_assert!(self.fsm_mod.start_type.is_none());
+        self.fsm_mod.start_type = Some(OperationStartType::Now);
+        self
+    }
+}
+
+/// Internal data required in the RX state
+struct RxData {
+    request: RxRequest,
 }
 
 /// The state of the software PHY FSM
@@ -153,6 +282,8 @@ impl Phy {
     ///   let phy = Phy::new(&peripherals.RADIO);
     /// # }
     /// ```
+    // TODO: Should I take mutable reference to the register block, to own it exclusively? With
+    // a lifetime bound to the created instance?
     pub fn new(radio: &RadioRegisterBlock) -> Self {
         let isr_data = IsrData {
             radio: RadioPeriphWrapper::new(radio),
@@ -364,7 +495,11 @@ impl Phy {
     }
 
     /// FSM procedure on entering RX state
-    fn enter_rx(buffer: &[u8], i: &mut IsrData) {
+    fn enter_rx(buffer: &[u8], fsm_mod: &RxFsmModifiers, i: &mut IsrData) -> Result<(), Error> {
+        if fsm_mod.start_type.is_none() {
+            return Err(Error::InvalidArgument);
+        }
+
         Phy::set_packetptr(buffer, i);
         i.radio
             .shorts
@@ -373,14 +508,21 @@ impl Phy {
         i.radio
             .events_crcerror
             .write(|w| w.events_crcerror().clear_bit());
-        i.radio.tasks_rxen.write(|w| w.tasks_rxen().set_bit());
+
+        match fsm_mod.start_type {
+            Some(OperationStartType::Now) => i.radio.tasks_rxen.write(|w| w.tasks_rxen().set_bit()),
+            None => panic!("Checked that start_type is Some() while validating arguemtns"),
+        }
+
         i.radio
             .intenset
             .write(|w| w.crcok().set_bit().crcerror().set_bit());
+
+        Ok(())
     }
 
     /// FSM procedure on exitting RX state
-    fn exit_rx(i: &mut IsrData) {
+    fn exit_rx(_fsm_mod: &RxFsmModifiers, i: &mut IsrData) {
         i.radio
             .intenclr
             .write(|w| w.crcok().set_bit().crcerror().set_bit());
@@ -393,22 +535,13 @@ impl Phy {
     /// Returns [`Ok(())`](core::result::Result::Ok) if the request was accepted. If the request
     /// was not accepted returns [`Err(Error)`](Error).
     ///
-    /// After a frame is received the `callback` function is called from an ISR context. The
-    /// `result` parameter of the `callback` function is [`Ok(RxOk)`](RxOk) if the received frame
-    /// is valid. Alternatively it is [`Err(Error)`](Error) if the received frame is invalid.
-    ///
-    /// When the callback is called the receiver is not enabled anymore.
-    ///
-    /// The `rx_buffer` is returned to the caller through `callback` when received a valid frame.
-    /// The `rx_buffer` is dropped on any error.
-    ///
     /// # Examples
     ///
     /// ```no_run
     /// # #[macro_use] extern crate nrf_radio;
     /// # missing_test_fns!();
     /// use nrf52840_hal::pac::Peripherals;
-    /// use nrf_radio::radio::{Phy, RxOk, Context};
+    /// use nrf_radio::radio::{Phy, RxOk, RxRequest, Context};
     /// use nrf_radio::error::Error;
     /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
     /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
@@ -431,29 +564,25 @@ impl Phy {
     ///   let phy = Phy::new(&peripherals.RADIO);
     ///   phy.configure_802154();
     ///
-    ///   let result = phy.rx(buffer_allocator.get_frame().unwrap(), rx_callback, &None::<usize>);
+    ///   let result = phy.rx(
+    ///         RxRequest::new(
+    ///                 buffer_allocator.get_frame().unwrap(),
+    ///                 rx_callback,
+    ///                 &None::<usize>)
+    ///             .now());
     ///   assert_eq!(result, Ok(()));
     /// }
     /// ```
-    pub fn rx(
-        &self,
-        rx_buffer: FrameBuffer<'static>,
-        callback: RxCallback,
-        context: Context,
-    ) -> Result<(), Error> {
-        if rx_buffer.len() <= 127 {
+    pub fn rx(&self, request: RxRequest) -> Result<(), Error> {
+        if request.buffer.len() <= 127 {
             // TODO: remove magic number
             return Err(Error::TooSmallBuffer);
         }
 
         self.use_isr_data(|i| match &i.state {
             State::Idle => {
-                Phy::enter_rx(&rx_buffer, i);
-                i.state = State::Rx(RxData {
-                    callback,
-                    context,
-                    rx_buffer,
-                });
+                Phy::enter_rx(&request.buffer, &request.fsm_mod, i)?;
+                i.state = State::Rx(RxData { request });
                 Ok(())
             }
             _ => Err(Error::WouldBlock),
@@ -486,10 +615,10 @@ fn irq_handler() {
                     i.radio.events_crcok.write(|w| w.events_crcok().clear_bit());
 
                     callback = Callback::Rx(
-                        rx_data.callback,
-                        rx_data.context,
+                        rx_data.request.callback,
+                        rx_data.request.context,
                         Ok(RxOk {
-                            frame: rx_data.rx_buffer,
+                            frame: rx_data.request.buffer,
                         }),
                     );
                 } else if i
@@ -503,14 +632,17 @@ fn irq_handler() {
                         .events_crcerror
                         .write(|w| w.events_crcerror().clear_bit());
 
-                    callback =
-                        Callback::Rx(rx_data.callback, rx_data.context, Err(Error::IncorrectCrc));
+                    callback = Callback::Rx(
+                        rx_data.request.callback,
+                        rx_data.request.context,
+                        Err(Error::IncorrectCrc),
+                    );
                 } else {
                     panic!("Unexpected event received in Rx state");
                 }
 
                 i.state = State::Idle;
-                Phy::exit_rx(&mut i);
+                Phy::exit_rx(&rx_data.request.fsm_mod, &mut i);
             }
 
             State::Tx(tx_data) => {
@@ -699,11 +831,12 @@ mod tests {
             unsafe { CALLED = true };
         }
 
-        let result = phy.rx(
+        let result = phy.rx(RxRequest::new(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
             &None::<usize>,
-        );
+        )
+        .now());
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe { CALLED });
@@ -745,11 +878,12 @@ mod tests {
             unsafe { RECEIVED_RESULT = Some(result) };
         }
 
-        let result = phy.rx(
+        let result = phy.rx(RxRequest::new(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
             &None::<usize>,
-        );
+        )
+        .now());
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe { CALLED });
@@ -792,11 +926,12 @@ mod tests {
             unsafe { RECEIVED_RESULT = Some(result) };
         }
 
-        let result = phy.rx(
+        let result = phy.rx(RxRequest::new(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             callback,
             &None::<usize>,
-        );
+        )
+        .now());
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe { CALLED });
@@ -829,11 +964,12 @@ mod tests {
             unsafe { RX_CALLED = true };
         }
 
-        let result = phy.rx(
+        let result = phy.rx(RxRequest::new(
             create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
             rx_callback,
             &None::<usize>,
-        );
+        )
+        .now());
         assert_eq!(result, Ok(()));
 
         let frame: [u8; 17] = [
@@ -892,11 +1028,11 @@ mod tests {
             unsafe { RX_CALLED = true };
         }
 
-        let result = phy.rx(
+        let result = phy.rx(RxRequest::new(
             create_frame_buffer_from_static_buffer(unsafe { &mut RX_FRAME }),
             rx_callback,
             &None::<usize>,
-        );
+        ));
         assert_eq!(result, Err(Error::WouldBlock));
 
         assert!(!unsafe { RX_CALLED });

@@ -13,7 +13,7 @@ use crate::frm_mem_mng::frame_buffer::FrameBuffer;
 use crate::ieee802154::frame::{Addr, Frame};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
-use crate::radio::{Context, Phy, RxOk};
+use crate::radio::{Context, Phy, RxOk, RxRequest};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
@@ -214,7 +214,8 @@ impl Rx {
         // TODO: return error if already receiving
         self.use_data(|d| {
             d.receive_done_callback = Some(rx_done_callback);
-            d.phy.rx(rx_buffer, Rx::phy_callback, self.callback_data)
+            d.phy
+                .rx(RxRequest::new(rx_buffer, Rx::phy_callback, self.callback_data).now())
         })
     }
 
