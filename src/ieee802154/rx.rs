@@ -258,7 +258,7 @@ impl Rx {
     fn phy_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
         defmt::info!("rx callback");
 
-        if let Some(ppi_ch) = resources.get_phyend_ppi_channel() {
+        if let Some(ppi_ch) = resources.phyend_ppi_channel() {
             Rx::use_data_from_context(context, |d| {
                 ppi_ch.disable();
                 let result = d.timer.stop_capturing_timestamps(&ppi_ch);
