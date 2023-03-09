@@ -67,7 +67,7 @@ pub struct RxResources {
 
 impl RxResources {
     /// Get PPI channel borrowed to be triggered at the PHYEND event
-    pub fn get_phyend_ppi_channel(&mut self) -> Option<ppi::Channel> {
+    pub fn phyend_ppi_channel(&mut self) -> Option<ppi::Channel> {
         self.phyend_ppi_channel.take()
     }
 }
@@ -775,6 +775,7 @@ missing_test_fns!();
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hw::ppi::traits::MockChannel;
     use serial_test::serial;
 
     // RADIO peripheral mock
@@ -1140,5 +1141,145 @@ mod tests {
 
         assert!(!unsafe { RX_CALLED });
         assert!(!unsafe { TX_CALLED });
+    }
+
+    #[test]
+    #[serial]
+    #[cfg_attr(miri, ignore)]
+    fn test_802154_rx_frame_with_ppi_on_phyend() {
+        let radio_mock = RadioMock::new();
+        Phy::reset();
+        let phy = Phy::new(&radio_mock);
+        phy.configure_802154();
+
+        static mut CALLED: bool = false;
+        static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
+        static mut RETURNED_PPI_CHANNEL: Option<ppi::Channel> = None;
+        static mut FRAME: [u8; 128] = [0; 128];
+
+        let mut ppi_ch_mock = MockChannel::new();
+        let expected_event_ptr = &radio_mock.events_phyend as *const _ as u32;
+        ppi_ch_mock
+            .expect_publish_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::events_phyend::EVENTS_PHYEND_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        ppi_ch_mock
+            .expect_stop_publishing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::events_phyend::EVENTS_PHYEND_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+
+        fn callback(result: Result<RxOk, Error>, _context: Context, resources: &mut RxResources) {
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
+            unsafe { RETURNED_PPI_CHANNEL = resources.phyend_ppi_channel() };
+        }
+
+        let result = phy.rx(RxRequest::new(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+            &None::<usize>,
+        )
+        .with_ppi_channel_on_phyend(ppi_ch_mock)
+        .now());
+
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { CALLED });
+
+        // Set IRQ event and trigger IRQ
+        radio_mock
+            .events_crcok
+            .write(|w| w.events_crcok().set_bit());
+        irq_handler();
+
+        assert!(unsafe { CALLED });
+        unsafe {
+            assert!(RECEIVED_RESULT.is_some());
+            let received_option = RECEIVED_RESULT.replace(Err(Error::WouldBlock)).unwrap();
+            assert!(received_option.is_ok());
+            assert_eq!(
+                received_option.as_ref().unwrap().frame.as_ptr() as u32,
+                FRAME.as_ptr() as u32
+            );
+            // TODO: Verify id?
+            assert!(RETURNED_PPI_CHANNEL.is_some());
+        }
+        assert!(radio_mock.intenclr.read().crcok().bit_is_set());
+        assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
+    }
+
+    #[test]
+    #[serial]
+    #[cfg_attr(miri, ignore)]
+    fn test_802154_rx_frame_with_ppi_on_phyend_ends_with_crcerror() {
+        let radio_mock = RadioMock::new();
+        Phy::reset();
+        let phy = Phy::new(&radio_mock);
+        phy.configure_802154();
+
+        static mut CALLED: bool = false;
+        static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
+        static mut RETURNED_PPI_CHANNEL: Option<ppi::Channel> = None;
+        static mut FRAME: [u8; 128] = [0; 128];
+
+        let mut ppi_ch_mock = MockChannel::new();
+        let expected_event_ptr = &radio_mock.events_phyend as *const _ as u32;
+        ppi_ch_mock
+            .expect_publish_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::events_phyend::EVENTS_PHYEND_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        ppi_ch_mock
+            .expect_stop_publishing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::events_phyend::EVENTS_PHYEND_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+
+        fn callback(result: Result<RxOk, Error>, _context: Context, resources: &mut RxResources) {
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
+            unsafe { RETURNED_PPI_CHANNEL = resources.phyend_ppi_channel() };
+        }
+
+        let result = phy.rx(RxRequest::new(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+            &None::<usize>,
+        )
+        .with_ppi_channel_on_phyend(ppi_ch_mock)
+        .now());
+
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { CALLED });
+
+        // Set IRQ event and trigger IRQ
+        radio_mock
+            .events_crcerror
+            .write(|w| w.events_crcerror().set_bit());
+        irq_handler();
+
+        assert!(unsafe { CALLED });
+        assert_eq!(unsafe { &RECEIVED_RESULT }, &Some(Err(Error::IncorrectCrc)));
+        // TODO: Verify id?
+        assert!(unsafe { RETURNED_PPI_CHANNEL.is_some() });
+        assert!(radio_mock.intenclr.read().crcok().bit_is_set());
+        assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
     }
 }

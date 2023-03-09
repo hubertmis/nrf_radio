@@ -8,6 +8,15 @@
 //! Currently only physical layer of nRF52840 is supported, but this crate
 //! is designed to be extensible for other protocols and other SoCs.
 
+#[cfg(not(any(feature = "mocked_platform", feature = "nrf52840")))]
+compile_error!("One platform must be enabled as a build feature");
+
+#[cfg(all(feature = "mocked_platform", feature = "nrf52840"))]
+compile_error!("Cannot enable multiple platforms simultaneously (mocked and nrf52840)");
+
+#[cfg(all(test, not(feature = "mocked_platform")))]
+compile_error!("For tests \"mocked_platform\" feature shall be selected");
+
 // lazy_mut crate is used in tasklets tests
 #[cfg(test)]
 #[macro_use]

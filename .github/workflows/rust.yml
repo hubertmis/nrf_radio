@@ -10,6 +10,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Run tests
+      run: cargo build --verbose --features nrf52840
+
+  doc:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Generate docs
+      run: cargo doc --no-deps --features nrf52840
+    - name: Archive generated docs
+      uses: actions/upload-artifact@v3
+      with:
+        name: docs
+        path: target/doc/
+
   test:
 
     runs-on: ubuntu-latest
@@ -17,7 +40,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --verbose --features mocked_platform
 
   fmt:
 
@@ -28,20 +51,6 @@ jobs:
     - name: Format
       run: cargo fmt --verbose --check
 
-  doc:
-
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v3
-    - name: Generate docs
-      run: cargo doc --no-deps
-    - name: Archive generated docs
-      uses: actions/upload-artifact@v3
-      with:
-        name: docs
-        path: target/doc/
-
   clippy:
 
     runs-on: ubuntu-latest
@@ -49,7 +58,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Run clippy check
-      run: cargo clippy --all-features --no-deps -- -D warnings
+      run: cargo clippy --features mocked_platform --no-deps -- -D warnings
 
   miri:
 
@@ -63,4 +72,4 @@ jobs:
           rustup override set nightly
           cargo miri setup
       - name: Test with Miri
-        run: cargo miri test
+        run: cargo miri test --features mocked_platform

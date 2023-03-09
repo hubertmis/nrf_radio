@@ -6,6 +6,11 @@
 //! * scheduling hardware events for [PPIs](super::ppi)
 //! * timestamping hardware events from [PPIs](super::ppi)
 
+#[cfg(feature = "nrf52840")]
+pub mod timer_using_timer;
+
+// Temporarily use nRF52 timer until mock is available
+#[cfg(feature = "mocked_platform")]
 pub mod timer_using_timer;
 
 use super::ppi::traits::Channel;

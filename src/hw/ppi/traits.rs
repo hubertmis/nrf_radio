@@ -9,6 +9,7 @@ use crate::error::Error;
 use mockall::*;
 
 /// Allocates channels used to connect peripherals' events with tasks
+#[cfg_attr(test, automock)]
 pub trait Allocator {
     /// Allocate new channel
     fn allocate_channel(&'static self) -> Result<super::Channel, Error>;

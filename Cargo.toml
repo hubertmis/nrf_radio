@@ -5,6 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+nrf52840 = []
+mocked_platform = []
+
 [dependencies]
 array-init = "2.1"
 nrf52840-hal = "0.16"
