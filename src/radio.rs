@@ -62,20 +62,25 @@ pub type RxCallback = fn(Result<RxOk, Error>, Context, &mut RxResources);
 
 /// Resrouces being returned to the caller in RxCallback function
 pub struct RxResources {
+    start_ppi_channel: Option<ppi::Channel>,
     phyend_ppi_channel: Option<ppi::Channel>,
 }
 
 impl RxResources {
+    /// Get PPI channel borrowed to trigger RXEN task
+    pub fn start_channel(&mut self) -> Option<ppi::Channel> {
+        self.start_ppi_channel.take()
+    }
+
     /// Get PPI channel borrowed to be triggered at the PHYEND event
     pub fn phyend_ppi_channel(&mut self) -> Option<ppi::Channel> {
         self.phyend_ppi_channel.take()
     }
 }
 
-//type Timestamp = u64;
 enum OperationStartType {
     Now,
-    //AtTimestamp(Timestamp),
+    AtEvent(ppi::Channel),
 }
 
 struct RxFsmModifiers {
@@ -216,12 +221,56 @@ impl RxRequest {
         self
     }
 
-    /*
-    pub fn at_timestamp(mut self, timestamp: Timestamp) -> Self {
-        self.fsm_mod.start_type = Some(OperationStartType::AtTimestamp(timestamp));
+    /// Marks passed request to be started when passed ppi channel is triggered
+    ///
+    /// RX request may be started as soon as possible (now), or it might be deferred to be started
+    /// by a hardware event (potentially using a hardware task). This function selects that passed
+    /// request is to be started at a hardware event.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::hw::ppi::{self, traits::Allocator};
+    /// use nrf_radio::radio::{Context, RxOk, RxRequest, RxResources};
+    /// use nrf52840_hal::pac::Peripherals;
+    ///
+    /// fn rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// // Allocate frame buffer
+    /// let buffer_allocator = SingleFrameAllocator::new();
+    /// let frame_buffer = buffer_allocator.get_frame().unwrap();
+    ///
+    /// // Allocate PPI channel
+    /// let peripherals = Peripherals::take().unwrap();
+    /// let ppi_allocator;
+    ///
+    /// static mut PPI_ALLOCATOR: Option<ppi::Allocator> = None;
+    /// unsafe {
+    ///   PPI_ALLOCATOR = Some(ppi::Allocator::new(&peripherals.PPI));
+    ///   ppi_allocator = PPI_ALLOCATOR.as_ref().unwrap();
+    /// }
+    ///
+    /// let ppi_channel = ppi_allocator.allocate_channel().unwrap();
+    ///
+    /// let complete_request = RxRequest::new(buffer_allocator.get_frame().unwrap(),
+    ///                                       rx_callback,
+    ///                                       &None::<usize>)
+    ///                                   .at_event(ppi_channel);
+    /// # }
+    /// ```
+    pub fn at_event(mut self, ppi_channel: ppi::Channel) -> Self {
+        debug_assert!(self.fsm_mod.start_type.is_none());
+        self.fsm_mod.start_type = Some(OperationStartType::AtEvent(ppi_channel));
         self
     }
-    */
 
     /// Marks passed request to be started now
     ///
@@ -582,8 +631,11 @@ impl Phy {
             debug_assert!(result.is_ok());
         }
 
-        match fsm_mod.start_type {
+        match &fsm_mod.start_type {
             Some(OperationStartType::Now) => i.radio.tasks_rxen.write(|w| w.tasks_rxen().set_bit()),
+            Some(OperationStartType::AtEvent(ppi_ch)) => ppi_ch
+                .subscribe_by(&i.radio.tasks_rxen as *const _)
+                .unwrap(),
             None => panic!("Checked that start_type is Some() while validating arguemtns"),
         }
 
@@ -598,6 +650,11 @@ impl Phy {
     fn exit_rx(fsm_mod: &RxFsmModifiers, i: &mut IsrData) {
         if let Some(phyend_ch) = &fsm_mod.phyend_ppi_channel {
             let result = phyend_ch.stop_publishing_by(&i.radio.events_phyend as *const _);
+            debug_assert!(result.is_ok());
+        }
+
+        if let Some(OperationStartType::AtEvent(start_ch)) = &fsm_mod.start_type {
+            let result = start_ch.stop_subscribing_by(&i.radio.tasks_rxen as *const _);
             debug_assert!(result.is_ok());
         }
 
@@ -695,6 +752,7 @@ fn irq_handler() {
             State::Rx(mut rx_data) => {
                 let resources = RxResources {
                     phyend_ppi_channel: None,
+                    start_ppi_channel: None,
                 };
 
                 if i.radio.events_crcok.read().events_crcok().bit_is_set() {
@@ -733,6 +791,12 @@ fn irq_handler() {
                 Phy::exit_rx(&rx_data.request.fsm_mod, &mut i);
 
                 if let Callback::Rx(_, _, _, ref mut resources) = callback {
+                    if let Some(OperationStartType::AtEvent(start_ch)) =
+                        rx_data.request.fsm_mod.start_type
+                    {
+                        resources.start_ppi_channel = Some(start_ch);
+                    }
+
                     resources.phyend_ppi_channel =
                         rx_data.request.fsm_mod.phyend_ppi_channel.take();
                 }
@@ -1279,6 +1343,79 @@ mod tests {
         assert_eq!(unsafe { &RECEIVED_RESULT }, &Some(Err(Error::IncorrectCrc)));
         // TODO: Verify id?
         assert!(unsafe { RETURNED_PPI_CHANNEL.is_some() });
+        assert!(radio_mock.intenclr.read().crcok().bit_is_set());
+        assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
+    }
+
+    #[test]
+    #[serial]
+    #[cfg_attr(miri, ignore)]
+    fn test_802154_start_rx_at_hardware_event() {
+        let radio_mock = RadioMock::new();
+        Phy::reset();
+        let phy = Phy::new(&radio_mock);
+        phy.configure_802154();
+
+        static mut CALLED: bool = false;
+        static mut RECEIVED_RESULT: Option<Result<RxOk, Error>> = None;
+        static mut RETURNED_PPI_CHANNEL: Option<ppi::Channel> = None;
+        static mut FRAME: [u8; 128] = [0; 128];
+
+        fn callback(result: Result<RxOk, Error>, _context: Context, resources: &mut RxResources) {
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = Some(result) };
+            unsafe { RETURNED_PPI_CHANNEL = resources.start_channel() };
+        }
+
+        let mut ppi_ch_mock = MockChannel::new();
+        let expected_task_ptr = &radio_mock.tasks_rxen as *const _ as u32;
+        ppi_ch_mock
+            .expect_subscribe_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::tasks_rxen::TASKS_RXEN_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        ppi_ch_mock
+            .expect_stop_subscribing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::tasks_rxen::TASKS_RXEN_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let result = phy.rx(RxRequest::new(
+            create_frame_buffer_from_static_buffer(unsafe { &mut FRAME }),
+            callback,
+            &None::<usize>,
+        )
+        .at_event(ppi_ch_mock));
+
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { CALLED });
+
+        // Set IRQ event and trigger IRQ
+        radio_mock
+            .events_crcok
+            .write(|w| w.events_crcok().set_bit());
+        irq_handler();
+
+        assert!(unsafe { CALLED });
+        unsafe {
+            assert!(RECEIVED_RESULT.is_some());
+            let received_option = RECEIVED_RESULT.replace(Err(Error::WouldBlock)).unwrap();
+            assert!(received_option.is_ok());
+            assert_eq!(
+                received_option.as_ref().unwrap().frame.as_ptr() as u32,
+                FRAME.as_ptr() as u32
+            );
+            // TODO: Verify id?
+            assert!(RETURNED_PPI_CHANNEL.is_some());
+        }
         assert!(radio_mock.intenclr.read().crcok().bit_is_set());
         assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
     }
