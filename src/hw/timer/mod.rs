@@ -16,6 +16,11 @@ pub mod timer_using_timer;
 use super::ppi::traits::Channel;
 use crate::error::Error;
 
+/// Absolute time (timestamp) in this system
+///
+/// The resolution is 1 microsecond
+type Timestamp = u32;
+
 // TODO: so far I have no idea how to make this module portable. Let's think about it later
 //       It needs to be able to use TIMER, RTC, combination of both, or newer hardware peripherals
 //
@@ -35,11 +40,14 @@ use crate::error::Error;
 ///
 /// Modules implementing this trait are expected to use hardware, or lower level features (like
 /// operating system timers) to provide required features
-pub trait Timer<PC: Channel>: Sync + Timestamper<PC> {
+pub trait Timer<PC: Channel>: Sync + Timestamper<PC> + TaskTrigger<PC> {
     /// Start this timer
     ///
     /// When timer is started its value is monotonically increasing in time.
     fn start(&mut self) -> Result<(), Error>;
+
+    /// Get current time
+    fn now(&self) -> Result<Timestamp, Error>;
 }
 
 /// Capability of timestamping hardware events
@@ -64,8 +72,22 @@ pub trait Timestamper<PC: Channel> {
     fn stop_capturing_timestamps(&self, ppi_ch: &PC) -> Result<(), Error>;
 
     /// Get the last captured timestamp (if any) in microseconds
-    fn timestamp(&self) -> Result<u32, Error>;
+    fn timestamp(&self) -> Result<Timestamp, Error>;
+}
+
+/// Capability of triggering hardware tasks
+///
+/// The tasks are triggered according to a freeruning timer synchronized with the freerunning
+/// timers for other features of the [`Timer`] trait
+pub trait TaskTrigger<PC: Channel> {
+    /// Prepare hardware to publish to a PPI channel at specified time
+    ///
+    /// At specified `time` this timer published to the passed PPI channel what triggers all tasks
+    /// subscribing to this channel.
+    fn trigger_task_at(&self, ppi_ch: &PC, time: Timestamp) -> Result<(), Error>;
+
+    /// Deconfigure hardware from publishing timer event to the passed PPI channel
+    fn stop_triggering_task(&self, ppi_ch: &PC) -> Result<(), Error>;
 }
 
 // TODO: callback scheduler trait
-// TODO: task trigger trait
