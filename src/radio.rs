@@ -31,6 +31,14 @@ impl Deref for RadioPeriphWrapper {
     }
 }
 
+/// Start type of operations using complex requestors
+enum OperationStartType {
+    /// Start operation immediately
+    Now,
+    /// Start operation when hardware event is propagated through a PPI channel
+    AtEvent(ppi::Channel),
+}
+
 // TODO: shorter lifetime than static. Is it possible?
 //       Maybe it requires FSM refactoring to change FSM type on the fly?
 /// Reference to any data selected by a requester
@@ -39,12 +47,212 @@ impl Deref for RadioPeriphWrapper {
 pub type Context = &'static (dyn Any + Send + Sync);
 
 /// Type of the callback function called when the requested TX operation is completed
-pub type TxCallback = fn(Result<(), Error>, Context);
+pub type TxCallback = fn(Result<(), Error>, Context, &mut TxResources);
+
+/// Resrouces being returned to the caller in TxCallback function
+pub struct TxResources {
+    start_ppi_channel: Option<ppi::Channel>,
+}
+
+impl TxResources {
+    /// Get PPI channel borrowed to trigger RXEN task
+    pub fn start_channel(&mut self) -> Option<ppi::Channel> {
+        self.start_ppi_channel.take()
+    }
+}
+
+struct TxFsmModifiers {
+    start_type: Option<OperationStartType>,
+}
+
+/// Defines TX operation to be requested
+///
+/// User-friendly interface to flexibly select optional features of TX operation. In the simplest
+/// usage only the arguments mandatory for each TX operation are passed. In more complex scenarios
+/// optional methods can be chained to enable more sophisticated TX features
+///
+/// # Example
+///
+/// ```no_run
+/// # #[macro_use] extern crate nrf_radio;
+/// # missing_test_fns!();
+/// # fn main() {
+/// use nrf_radio::error::Error;
+/// use nrf_radio::radio::{Context, TxRequest, TxResources};
+///
+/// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+///   // Do something with the RX operation result
+/// }
+///
+/// let frame = [0x10u8,
+///              0x41, 0x98, 0xff,
+///              0x4d, 0x48, 0xff, 0xff, 0xef, 0xbe,
+///              0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+///             ];
+///
+/// let request = TxRequest::new(&frame,
+///                              tx_callback,
+///                              &None::<usize>)
+///                          .now();
+/// # }
+/// ```
+pub struct TxRequest<'req> {
+    frame: &'req [u8],
+    tx_data: TxData,
+}
+
+impl<'req> TxRequest<'req> {
+    /// Creates TX operation request with mandatory data
+    ///
+    /// After a frame is transmitted the `callback` function is called from an ISR context. The
+    /// `result` parameter of the `callback` function is `Ok(())` if the frame was successfully
+    /// transmitted. Alternatively it is [`Err(Error)`](Error) if there was a problem with
+    /// transmission. The `context` argument is blindly copied to the `callback` function as its
+    /// `context` parameter. The caller can use `context` to match callbacks with transmission
+    /// requests. The `resources` argument returns resources that were borrowed to the `Phy` module
+    /// to proceed with the requested TX operation.
+    ///
+    /// When the callback is called the transmitter is not enabled anymore.
+    ///
+    /// The `buffer` is dropped after the procedure is finished, before the callback is called.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::radio::{Context, TxRequest, TxResources};
+    ///
+    /// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+    ///   // Do something with the TX operation result
+    /// }
+    ///
+    /// let frame = [0x10u8,
+    ///              0x61, 0x98, 0xff,
+    ///              0x4d, 0x48, 0xad, 0xde, 0xef, 0xbe,
+    ///              0xfa, 0xeb, 0xdc, 0xcd, 0xbe, 0xaf, 0x19,
+    ///             ];
+    ///
+    /// let initial_request = TxRequest::new(&frame,
+    ///                                      tx_callback,
+    ///                                      &None::<usize>);
+    /// # }
+    /// ```
+    pub fn new(frame: &'req [u8], callback: TxCallback, context: Context) -> Self {
+        Self {
+            frame,
+            tx_data: TxData {
+                callback,
+                context,
+                fsm_mod: TxFsmModifiers { start_type: None },
+            },
+        }
+    }
+
+    /// Marks passed request to be started when passed ppi channel is triggered
+    ///
+    /// TX request may be started as soon as possible (now), or it might be deferred to be started
+    /// by a hardware event (potentially using a hardware task). This function selects that passed
+    /// request is to be started at a hardware event.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::hw::ppi::{self, traits::Allocator};
+    /// use nrf_radio::radio::{Context, TxRequest, TxResources};
+    /// use nrf52840_hal::pac::Peripherals;
+    ///
+    /// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// // Allocate frame buffer
+    /// let frame = [0x10u8,
+    ///              0x41, 0x98, 0x01,
+    ///              0xff, 0xff, 0xff, 0xff, 0xfe, 0xca,
+    ///              0x01, 0x23, 0x45, 0x67, 0x89,
+    ///              0x00, 0x00,
+    ///             ];
+    ///
+    /// // Allocate PPI channel
+    /// let peripherals = Peripherals::take().unwrap();
+    /// let ppi_allocator;
+    ///
+    /// static mut PPI_ALLOCATOR: Option<ppi::Allocator> = None;
+    /// unsafe {
+    ///   PPI_ALLOCATOR = Some(ppi::Allocator::new(&peripherals.PPI));
+    ///   ppi_allocator = PPI_ALLOCATOR.as_ref().unwrap();
+    /// }
+    ///
+    /// let ppi_channel = ppi_allocator.allocate_channel().unwrap();
+    ///
+    /// let complete_request = TxRequest::new(&frame,
+    ///                                       tx_callback,
+    ///                                       &None::<usize>)
+    ///                                   .at_event(ppi_channel);
+    /// # }
+    /// ```
+    pub fn at_event(mut self, ppi_channel: ppi::Channel) -> Self {
+        debug_assert!(self.tx_data.fsm_mod.start_type.is_none());
+        self.tx_data.fsm_mod.start_type = Some(OperationStartType::AtEvent(ppi_channel));
+        self
+    }
+
+    /// Marks passed request to be started now
+    ///
+    /// TX request may be started as soon as possible (now), or it might be deferred to be started
+    /// by a hardware event (potentially using a hardware task). This function select that passed
+    /// request is to be started now.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// # fn main() {
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    /// use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    /// use nrf_radio::radio::{Context, TxRequest, TxResources};
+    ///
+    /// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+    ///   // Do something with the RX operation result
+    /// }
+    ///
+    /// let frame = [0x10u8,
+    ///              0x61, 0x98, 0x01,
+    ///              0xcd, 0xab, 0x34, 0x12, 0xef, 0xcd,
+    ///              0xff, 0xee, 0xdd, 0x5a, 0xa5,
+    ///              0xff, 0xff,
+    ///             ];
+    /// let complete_request = TxRequest::new(&frame,
+    ///                                       tx_callback,
+    ///                                       &None::<usize>)
+    ///                                   .now();
+    /// # }
+    /// ```
+    pub fn now(mut self) -> Self {
+        debug_assert!(self.tx_data.fsm_mod.start_type.is_none());
+        self.tx_data.fsm_mod.start_type = Some(OperationStartType::Now);
+        self
+    }
+}
 
 /// Internal data required in the TX state
 struct TxData {
     callback: TxCallback,
     context: Context,
+    fsm_mod: TxFsmModifiers,
 }
 
 /// Data and metadata of the correctly received frame
@@ -76,11 +284,6 @@ impl RxResources {
     pub fn phyend_ppi_channel(&mut self) -> Option<ppi::Channel> {
         self.phyend_ppi_channel.take()
     }
-}
-
-enum OperationStartType {
-    Now,
-    AtEvent(ppi::Channel),
 }
 
 struct RxFsmModifiers {
@@ -543,7 +746,11 @@ impl Phy {
     }
 
     /// FSM procedure on entering TX state
-    fn enter_tx(frame: &[u8], i: &mut IsrData) {
+    fn enter_tx(frame: &[u8], fsm_mod: &TxFsmModifiers, i: &mut IsrData) -> Result<(), Error> {
+        if fsm_mod.start_type.is_none() {
+            return Err(Error::InvalidArgument);
+        }
+
         Phy::set_packetptr(frame, i);
         i.radio
             .shorts
@@ -551,12 +758,26 @@ impl Phy {
         i.radio
             .events_phyend
             .write(|w| w.events_phyend().clear_bit());
-        i.radio.tasks_txen.write(|w| w.tasks_txen().set_bit());
+
+        match &fsm_mod.start_type {
+            Some(OperationStartType::Now) => i.radio.tasks_txen.write(|w| w.tasks_txen().set_bit()),
+            Some(OperationStartType::AtEvent(ppi_ch)) => ppi_ch
+                .subscribe_by(&i.radio.tasks_txen as *const _)
+                .unwrap(),
+            None => panic!("Checked that start_type is Some() while validating arguemtns"),
+        }
+
         i.radio.intenset.write(|w| w.phyend().set_bit());
+        Ok(())
     }
 
     /// FSM procedure on exitting TX state
-    fn exit_tx(i: &mut IsrData) {
+    fn exit_tx(fsm_mod: &TxFsmModifiers, i: &mut IsrData) {
+        if let Some(OperationStartType::AtEvent(start_ch)) = &fsm_mod.start_type {
+            let result = start_ch.stop_subscribing_by(&i.radio.tasks_txen as *const _);
+            debug_assert!(result.is_ok());
+        }
+
         i.radio.intenclr.write(|w| w.phyend().set_bit());
     }
 
@@ -580,10 +801,10 @@ impl Phy {
     /// # missing_test_fns!();
     /// use core::any::Any;
     /// use nrf52840_hal::pac::Peripherals;
-    /// use nrf_radio::radio::Phy;
+    /// use nrf_radio::radio::{Context, Phy, TxRequest, TxResources};
     /// use nrf_radio::error::Error;
     ///
-    /// fn tx_callback(result: Result<(), Error>, context: &'static (dyn Any + Send + Sync)) {
+    /// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
     ///   println!("Packet tx procedure finished");
     /// }
     ///
@@ -594,17 +815,17 @@ impl Phy {
     ///
     ///   let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
     ///                              0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    ///   let result = phy.tx(&frame, tx_callback, &None::<u8>);
+    ///   let result = phy.tx(TxRequest::new(&frame, tx_callback, &None::<u8>).now());
     ///   assert_eq!(result, Ok(()));
     /// }
     /// ```
-    pub fn tx(&self, frame: &[u8], callback: TxCallback, context: Context) -> Result<(), Error> {
+    pub fn tx(&self, request: TxRequest) -> Result<(), Error> {
         // FSM:
         // | idle |  <----> | tx |
         self.use_isr_data(|i| match &i.state {
             State::Idle => {
-                i.state = State::Tx(TxData { callback, context });
-                Phy::enter_tx(frame, i);
+                Phy::enter_tx(request.frame, &request.tx_data.fsm_mod, i)?;
+                i.state = State::Tx(request.tx_data);
                 Ok(())
             }
             _ => Err(Error::WouldBlock),
@@ -739,7 +960,7 @@ fn RADIO() {
 fn irq_handler() {
     enum Callback {
         None,
-        Tx(TxCallback, Context),
+        Tx(TxCallback, Context, TxResources),
         Rx(RxCallback, Context, Result<RxOk, Error>, RxResources),
     }
 
@@ -803,18 +1024,29 @@ fn irq_handler() {
             }
 
             State::Tx(tx_data) => {
+                let resources_to_return = TxResources {
+                    start_ppi_channel: None,
+                };
+
                 if i.radio.events_phyend.read().events_phyend().bit_is_set() {
                     i.radio
                         .events_phyend
                         .write(|w| w.events_phyend().clear_bit());
 
-                    callback = Callback::Tx(tx_data.callback, tx_data.context);
+                    callback = Callback::Tx(tx_data.callback, tx_data.context, resources_to_return);
                 } else {
                     panic!("Unexpected event received in Tx state");
                 }
 
                 i.state = State::Idle;
-                Phy::exit_tx(&mut i);
+                Phy::exit_tx(&tx_data.fsm_mod, &mut i);
+
+                if let Callback::Tx(_, _, ref mut resources) = callback {
+                    if let Some(OperationStartType::AtEvent(start_ch)) = tx_data.fsm_mod.start_type
+                    {
+                        resources.start_ppi_channel = Some(start_ch);
+                    }
+                }
             }
 
             State::Idle => panic!("An event received in Idle state"),
@@ -829,7 +1061,7 @@ fn irq_handler() {
         Callback::Rx(callback, context, result, mut resources) => {
             callback(result, context, &mut resources)
         }
-        Callback::Tx(callback, context) => callback(Ok(()), context),
+        Callback::Tx(callback, context, mut resources) => callback(Ok(()), context, &mut resources),
     };
 }
 
@@ -940,14 +1172,90 @@ mod tests {
         static mut RECEIVED_RESULT: Result<(), Error> = Err(Error::IncorrectCrc);
         static mut RECEIVED_CONTEXT: &Option<u8> = &Some(0);
 
-        fn callback(result: Result<(), Error>, context: Context) {
+        fn callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
             unsafe { CALLED = true };
             unsafe { RECEIVED_RESULT = result };
             unsafe { RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
+            assert!(resources.start_channel().is_none());
         }
 
         phy.configure_802154();
-        let result = phy.tx(&frame, callback, &None::<u8>);
+        let result = phy.tx(TxRequest::new(&frame, callback, &None::<u8>).now());
+
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { CALLED });
+
+        // Check peripheral configuration before IRQ
+        assert_eq!(radio_mock.packetptr.read().bits(), frame.as_ptr() as u32);
+        assert!(radio_mock.shorts.read().txready_start().bit_is_set());
+        assert!(radio_mock.shorts.read().phyend_disable().bit_is_set());
+        assert!(radio_mock
+            .events_phyend
+            .read()
+            .events_phyend()
+            .bit_is_clear());
+        assert!(radio_mock.intenset.read().phyend().bit_is_set());
+
+        // Set IRQ event and trigger IRQ
+        radio_mock
+            .events_phyend
+            .write(|w| w.events_phyend().set_bit());
+        irq_handler();
+
+        assert!(unsafe { CALLED });
+        assert_eq!(unsafe { &RECEIVED_RESULT }, &Ok(()));
+        assert_eq!(unsafe { RECEIVED_CONTEXT }, &None::<u8>); // TODO check address instead of value
+        assert!(radio_mock.intenclr.read().phyend().bit_is_set());
+    }
+
+    #[test]
+    #[serial]
+    #[cfg_attr(miri, ignore)]
+    fn test_802154_enter_tx_at_hw_event() {
+        let radio_mock = RadioMock::new();
+        Phy::reset();
+        let phy = Phy::new(&radio_mock);
+
+        let frame: [u8; 17] = [
+            16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07,
+        ];
+
+        static mut CALLED: bool = false;
+        static mut RECEIVED_RESULT: Result<(), Error> = Err(Error::IncorrectCrc);
+        static mut RECEIVED_CONTEXT: &Option<u8> = &Some(0);
+
+        fn callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+            unsafe { CALLED = true };
+            unsafe { RECEIVED_RESULT = result };
+            unsafe { RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
+            // TODO: verify channel id?
+            assert!(resources.start_channel().is_some());
+        }
+
+        let mut ppi_ch_mock = MockChannel::new();
+        let expected_task_ptr = &radio_mock.tasks_txen as *const _ as u32;
+        ppi_ch_mock
+            .expect_subscribe_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::tasks_txen::TASKS_TXEN_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        ppi_ch_mock
+            .expect_stop_subscribing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    radio::tasks_txen::TASKS_TXEN_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+
+        phy.configure_802154();
+        let result = phy.tx(TxRequest::new(&frame, callback, &None::<u8>).at_event(ppi_ch_mock));
 
         assert_eq!(result, Ok(()));
         assert!(!unsafe { CALLED });
@@ -1145,13 +1453,14 @@ mod tests {
         static mut TX_RECEIVED_RESULT: Option<Result<(), Error>> = None;
         static mut TX_RECEIVED_CONTEXT: &Option<u8> = &Some(0);
 
-        fn tx_callback(result: Result<(), Error>, context: Context) {
+        fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
             unsafe { TX_CALLED = true };
             unsafe { TX_RECEIVED_RESULT = Some(result) };
             unsafe { TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
+            assert!(resources.start_channel().is_none());
         }
 
-        let result = phy.tx(&frame, tx_callback, &None::<u8>);
+        let result = phy.tx(TxRequest::new(&frame, tx_callback, &None::<u8>).now());
         assert_eq!(result, Err(Error::WouldBlock));
 
         assert!(!unsafe { RX_CALLED });
@@ -1177,13 +1486,14 @@ mod tests {
         static mut TX_RECEIVED_CONTEXT: &Option<u8> = &Some(0);
         static mut RX_FRAME: [u8; 128] = [0; 128];
 
-        fn tx_callback(result: Result<(), Error>, context: Context) {
+        fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
             unsafe { TX_CALLED = true };
             unsafe { TX_RECEIVED_RESULT = Some(result) };
             unsafe { TX_RECEIVED_CONTEXT = context.downcast_ref().unwrap() };
+            assert!(resources.start_channel().is_none());
         }
 
-        let result = phy.tx(&frame, tx_callback, &None::<u8>);
+        let result = phy.tx(TxRequest::new(&frame, tx_callback, &None::<u8>).now());
         assert_eq!(result, Ok(()));
 
         static mut RX_CALLED: bool = false;
