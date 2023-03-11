@@ -7,6 +7,7 @@
 //! * sending Acks if necessary
 //! * decrypting frames on-the-fly
 
+use super::rx_filter::{Filter, RxFilter};
 use crate::crit_sect;
 use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
@@ -15,14 +16,11 @@ use crate::hw::ppi::{
     traits::{Allocator, Channel},
 };
 use crate::hw::timer::Timer;
-use crate::ieee802154::frame::{Addr, Frame};
+use crate::ieee802154::frame::{Frame, Parser};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
 use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
-
-const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
-const BROADCAST_SHORT_ADDR: [u8; 2] = [0xff, 0xff];
 
 // TODO: context as an argument?
 /// Signature of a callback function called when the requested receive operation is finished
@@ -272,50 +270,27 @@ impl Rx {
                 let frame = Frame::from_frame_buffer(&rx_ok.frame);
                 if let Ok(frame) = frame {
                     Rx::use_data_from_context(context, |d| {
-                        // TODO: move filtering to a separated module
-                        if !d.pib.get_promiscuous() {
-                            let dst_pan_id = frame.get_dst_pan_id().unwrap();
-                            if let Some(dst_pan_id) = dst_pan_id {
-                                if dst_pan_id != d.pib.get_pan_id()
-                                    && dst_pan_id != &BROADCAST_PAN_ID
-                                {
-                                    notify_rx_done(d, Err(Error::NotMatchingPanId));
-                                    return;
-                                }
-                            } else {
-                                // TODO: Handle frames with missing dst pan id
-                                return;
-                            }
+                        let filter = Filter::new(d.pib);
+                        let filter_result = filter.filter_parsed_frame_part(&frame);
+                        let filter_passed = filter_result.is_ok();
 
-                            let dst_addr = frame.get_dst_address().unwrap();
-                            if let Some(dst_addr) = dst_addr {
-                                match dst_addr {
-                                    Addr::Short(addr) => {
-                                        if addr != d.pib.get_short_addr()
-                                            && addr != &BROADCAST_SHORT_ADDR
-                                        {
-                                            notify_rx_done(d, Err(Error::NotMatchingAddress));
-                                            return;
-                                        }
-                                    }
-                                    Addr::Ext(addr) => {
-                                        if addr != d.pib.get_ext_addr() {
-                                            notify_rx_done(d, Err(Error::NotMatchingAddress));
-                                            return;
-                                        }
-                                    }
-                                }
+                        let ar_option = frame.ar().unwrap();
+                        let ack_requested = ar_option.is_some() && ar_option.unwrap();
+
+                        if filter_passed && ack_requested {
+                            // TODO: Handle transmitting ACK
+                            // TODO: Handle transmitting ACK after relevant fields are received
+                            //       (src addr, security?)
+                            // TODO: Report received frame for us (after ACK transmitted?)!
+                        } else {
+                            let result = if filter_passed || d.pib.get_promiscuous() {
+                                Ok((rx_ok.frame, d.timer.timestamp().unwrap().into()))
                             } else {
-                                // TODO: Handle frames with missing dst address
-                                return;
-                            }
+                                Err(filter_result.err().unwrap())
+                            };
+
+                            notify_rx_done(d, result);
                         }
-
-                        // TODO: Handle transmitting ACK
-                        // TODO: Handle transmitting ACK after relevant fields are received
-                        //       (src addr, security?)
-                        // TODO: Report received frame for us (after ACK transmitted?)!
-                        notify_rx_done(d, Ok((rx_ok.frame, d.timer.timestamp().unwrap().into())));
                     });
                 } else {
                     Rx::use_data_from_context(context, |d| {

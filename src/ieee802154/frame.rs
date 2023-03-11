@@ -2,6 +2,9 @@ use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
 use core::convert::TryFrom;
 
+#[cfg(test)]
+use mockall::*;
+
 // TODO: Move constants to a common module?
 const EXT_ADDR_SIZE: usize = 8;
 const SHORT_ADDR_SIZE: usize = 2;
@@ -136,6 +139,293 @@ impl TryFrom<&[u8]> for Version {
         }
     }
 }
+
+///! Capability of parsing a IEEE 802.15.4 frame
+#[cfg_attr(test, automock)]
+pub trait Parser {
+    /// Parse a bytestring as a IEEE 802.15.4 frame
+    ///
+    /// Full content of the frame must be available.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::error::Error;
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
+    ///
+    ///   let frame_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x88, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let mut frame = Frame::new();
+    ///
+    ///   let result = frame.parse(&frame_bytes);
+    ///   assert!(result.is_ok());
+    ///
+    ///   let result = frame.parse(&frame_bytes[0..3]);
+    ///   assert_eq!(result, Err(Error::InvalidFrame));
+    /// ```
+    fn parse(&mut self, buffer: &[u8]) -> Result<(), Error>;
+
+    /// Get type of given frame
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser, Type};
+    ///
+    ///   let data_frame_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x98, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let ack_bytes = [
+    ///       5u8,        // PHR
+    ///       0x02, 0x00, // FCF
+    ///       0x5e,       // SeqNum
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let data_frame = Frame::from_bytestring(&data_frame_bytes).unwrap();
+    ///   let ack_frame = Frame::from_bytestring(&ack_bytes).unwrap();
+    ///
+    ///   assert_eq!(data_frame.r#type(), Ok(&Type::Data));
+    ///   assert_eq!(ack_frame.r#type(), Ok(&Type::Ack));
+    /// ```
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn r#type<'a>(&'a self) -> Result<&'a Type, Error>;
+
+    /// Get value of the Frame Pending field
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
+    ///
+    ///   let ack_no_frame_pending_bytes = [
+    ///       5u8,        // PHR
+    ///       0x02, 0x00, // FCF
+    ///       0x5e,       // SeqNum
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let ack_frame_pending_bytes = [
+    ///       5u8,        // PHR
+    ///       0x12, 0x00, // FCF
+    ///       0x5e,       // SeqNum
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let no_fp_frame = Frame::from_bytestring(&ack_no_frame_pending_bytes).unwrap();
+    ///   let fp_frame = Frame::from_bytestring(&ack_frame_pending_bytes).unwrap();
+    ///
+    ///   assert_eq!(no_fp_frame.frame_pending(), Ok(Some(false)));
+    ///   assert_eq!(fp_frame.frame_pending(), Ok(Some(true)));
+    /// ```
+    fn frame_pending(&self) -> Result<Option<bool>, Error>;
+
+    /// Get value of the AR field
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
+    ///
+    ///   let unicast_data_frame_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x98, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let broadcast_data_frame_bytes = [
+    ///       16u8, // PHR
+    ///       0x41, 0x98, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let unicast_frame = Frame::from_bytestring(&unicast_data_frame_bytes).unwrap();
+    ///   let broadcast_frame = Frame::from_bytestring(&broadcast_data_frame_bytes).unwrap();
+    ///
+    ///   assert_eq!(unicast_frame.ar(), Ok(Some(true)));
+    ///   assert_eq!(broadcast_frame.ar(), Ok(Some(false)));
+    /// ```
+    fn ar(&self) -> Result<Option<bool>, Error>;
+
+    /// Get value of the Frame Version field
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser, Version};
+    ///
+    ///   let data_2003_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x88, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let data_2006_bytes = [
+    ///       20u8, // PHR
+    ///       0x69, 0x98, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01,       // Security Control
+    ///       0x01, 0x00, 0x00, 0x00, // Frame Counter
+    ///       0x01, 0x02, 0x03, 0x04, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let data_2015_bytes = [
+    ///       16u8, // PHR
+    ///       0x69, 0xa9, // FCF
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x61,       // Security Control
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let frame_2003 = Frame::from_bytestring(&data_2003_bytes).unwrap();
+    ///   let frame_2006 = Frame::from_bytestring(&data_2006_bytes).unwrap();
+    ///   let frame_2015 = Frame::from_bytestring(&data_2015_bytes).unwrap();
+    ///
+    ///   assert_eq!(frame_2003.version(), Ok(&Some(Version::V2003)));
+    ///   assert_eq!(frame_2006.version(), Ok(&Some(Version::V2006)));
+    ///   assert_eq!(frame_2015.version(), Ok(&Some(Version::V2015)));
+    /// ```
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn version<'a>(&'a self) -> Result<&'a Option<Version>, Error>;
+
+    /// Get Sequence Number value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
+    ///
+    ///   let frame_with_seq_num_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x88, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let frame_without_seq_num_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0xa9, // FCF
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, 0x06, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let frame_with_seq_num = Frame::from_bytestring(&frame_with_seq_num_bytes).unwrap();
+    ///   let frame_without_seq_num = Frame::from_bytestring(&frame_without_seq_num_bytes).unwrap();
+    ///
+    ///   assert_eq!(frame_with_seq_num.sequence_number(), Ok(Some(0x5e)));
+    ///   assert_eq!(frame_without_seq_num.sequence_number(), Ok(None));
+    /// ```
+    fn sequence_number(&self) -> Result<Option<u8>, Error>;
+
+    /// Get Destination PAN Id
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
+    ///
+    ///   let frame_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x88, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let frame = Frame::from_bytestring(&frame_bytes).unwrap();
+    ///
+    ///   assert_eq!(frame.dst_pan_id(), Ok(&Some([0x4du8, 0x48])));
+    /// ```
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn dst_pan_id<'a>(&'a self) -> Result<&'a Option<[u8; PAN_ID_SIZE]>, Error>;
+
+    /// Get Destination Address
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///   use nrf_radio::ieee802154::frame::{Addr, Frame, Parser};
+    ///
+    ///   let frame_with_extended_dst_addr_bytes = [
+    ///       22u8, // PHR
+    ///       0x61, 0x8c, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///   let frame_with_short_dst_addr_bytes = [
+    ///       16u8, // PHR
+    ///       0x61, 0x88, // FCF
+    ///       0x5e, // SeqNum
+    ///       0x4d, 0x48, // Dst Pan Id
+    ///       0x34, 0x12, // Dst Addr
+    ///       0xef, 0xcd, // Src Addr
+    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
+    ///       0x00, 0x00, // MFR
+    ///   ];
+    ///
+    ///   let extended_addr_frame = Frame::from_bytestring(&frame_with_extended_dst_addr_bytes).unwrap();
+    ///   let short_addr_frame = Frame::from_bytestring(&frame_with_short_dst_addr_bytes).unwrap();
+    ///
+    ///   assert_eq!(extended_addr_frame.dst_address(), Ok(&Some(Addr::Ext(
+    ///           [0xefu8, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01]))));
+    ///   assert_eq!(short_addr_frame.dst_address(), Ok(&Some(Addr::Short([0x34u8, 0x12]))));
+    /// ```
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn dst_address<'a>(&'a self) -> Result<&'a Option<Addr>, Error>;
+}
+
+// TODO: PartialParser trait capable of parsing available part of a frame
 
 enum AddrMode {
     None,
@@ -290,332 +580,13 @@ impl Frame {
         Ok(frame)
     }
 
-    /// Get type of given frame
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::{Frame, Type};
-    ///
-    ///   let data_frame_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x98, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let ack_bytes = [
-    ///       5u8,        // PHR
-    ///       0x02, 0x00, // FCF
-    ///       0x5e,       // SeqNum
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let data_frame = Frame::from_bytestring(&data_frame_bytes).unwrap();
-    ///   let ack_frame = Frame::from_bytestring(&ack_bytes).unwrap();
-    ///
-    ///   assert_eq!(data_frame.get_type(), Ok(&Type::Data));
-    ///   assert_eq!(ack_frame.get_type(), Ok(&Type::Ack));
-    /// ```
-    pub fn get_type(&self) -> Result<&Type, Error> {
-        match &self.r#type {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(r#type) => Ok(r#type),
-        }
-    }
-
-    /// Get value of the Frame Pending field
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::Frame;
-    ///
-    ///   let ack_no_frame_pending_bytes = [
-    ///       5u8,        // PHR
-    ///       0x02, 0x00, // FCF
-    ///       0x5e,       // SeqNum
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let ack_frame_pending_bytes = [
-    ///       5u8,        // PHR
-    ///       0x12, 0x00, // FCF
-    ///       0x5e,       // SeqNum
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let no_fp_frame = Frame::from_bytestring(&ack_no_frame_pending_bytes).unwrap();
-    ///   let fp_frame = Frame::from_bytestring(&ack_frame_pending_bytes).unwrap();
-    ///
-    ///   assert_eq!(no_fp_frame.get_frame_pending(), Ok(Some(false)));
-    ///   assert_eq!(fp_frame.get_frame_pending(), Ok(Some(true)));
-    /// ```
-    pub fn get_frame_pending(&self) -> Result<Option<bool>, Error> {
-        match self.frame_pending {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(fp) => Ok(fp),
-        }
-    }
-
-    /// Get value of the AR field
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::Frame;
-    ///
-    ///   let unicast_data_frame_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x98, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let broadcast_data_frame_bytes = [
-    ///       16u8, // PHR
-    ///       0x41, 0x98, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let unicast_frame = Frame::from_bytestring(&unicast_data_frame_bytes).unwrap();
-    ///   let broadcast_frame = Frame::from_bytestring(&broadcast_data_frame_bytes).unwrap();
-    ///
-    ///   assert_eq!(unicast_frame.get_ar(), Ok(Some(true)));
-    ///   assert_eq!(broadcast_frame.get_ar(), Ok(Some(false)));
-    /// ```
-    pub fn get_ar(&self) -> Result<Option<bool>, Error> {
-        match self.ar {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(ar) => Ok(ar),
-        }
-    }
-
-    /// Get value of the Frame Version field
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::{Frame, Version};
-    ///
-    ///   let data_2003_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x88, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let data_2006_bytes = [
-    ///       20u8, // PHR
-    ///       0x69, 0x98, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01,       // Security Control
-    ///       0x01, 0x00, 0x00, 0x00, // Frame Counter
-    ///       0x01, 0x02, 0x03, 0x04, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let data_2015_bytes = [
-    ///       16u8, // PHR
-    ///       0x69, 0xa9, // FCF
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x61,       // Security Control
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let frame_2003 = Frame::from_bytestring(&data_2003_bytes).unwrap();
-    ///   let frame_2006 = Frame::from_bytestring(&data_2006_bytes).unwrap();
-    ///   let frame_2015 = Frame::from_bytestring(&data_2015_bytes).unwrap();
-    ///
-    ///   assert_eq!(frame_2003.get_version(), Ok(&Some(Version::V2003)));
-    ///   assert_eq!(frame_2006.get_version(), Ok(&Some(Version::V2006)));
-    ///   assert_eq!(frame_2015.get_version(), Ok(&Some(Version::V2015)));
-    /// ```
-    pub fn get_version(&self) -> Result<&Option<Version>, Error> {
-        match &self.version {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(version) => Ok(version),
-        }
-    }
-
-    /// Get Sequence Number value
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::Frame;
-    ///
-    ///   let frame_with_seq_num_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x88, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let frame_without_seq_num_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0xa9, // FCF
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, 0x06, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let frame_with_seq_num = Frame::from_bytestring(&frame_with_seq_num_bytes).unwrap();
-    ///   let frame_without_seq_num = Frame::from_bytestring(&frame_without_seq_num_bytes).unwrap();
-    ///
-    ///   assert_eq!(frame_with_seq_num.get_sequence_number(), Ok(Some(0x5e)));
-    ///   assert_eq!(frame_without_seq_num.get_sequence_number(), Ok(None));
-    /// ```
-    pub fn get_sequence_number(&self) -> Result<Option<u8>, Error> {
-        match self.seq_num {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(seq_num) => Ok(seq_num),
-        }
-    }
-
-    /// Get Destination PAN Id
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::Frame;
-    ///
-    ///   let frame_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x88, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let frame = Frame::from_bytestring(&frame_bytes).unwrap();
-    ///
-    ///   assert_eq!(frame.get_dst_pan_id(), Ok(&Some([0x4du8, 0x48])));
-    /// ```
-    pub fn get_dst_pan_id(&self) -> Result<&Option<[u8; PAN_ID_SIZE]>, Error> {
-        match &self.dst_pan_id {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(pan_id) => Ok(pan_id),
-        }
-    }
-
-    /// Get Destination Address
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::ieee802154::frame::{Addr, Frame};
-    ///
-    ///   let frame_with_extended_dst_addr_bytes = [
-    ///       22u8, // PHR
-    ///       0x61, 0x8c, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///   let frame_with_short_dst_addr_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x88, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let extended_addr_frame = Frame::from_bytestring(&frame_with_extended_dst_addr_bytes).unwrap();
-    ///   let short_addr_frame = Frame::from_bytestring(&frame_with_short_dst_addr_bytes).unwrap();
-    ///
-    ///   assert_eq!(extended_addr_frame.get_dst_address(), Ok(&Some(Addr::Ext(
-    ///           [0xefu8, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01]))));
-    ///   assert_eq!(short_addr_frame.get_dst_address(), Ok(&Some(Addr::Short([0x34u8, 0x12]))));
-    /// ```
-    pub fn get_dst_address(&self) -> Result<&Option<Addr>, Error> {
-        match &self.dst_addr {
-            ParseStatus::Unknown => Err(Error::NotYetParsedField),
-            ParseStatus::Known(addr) => Ok(addr),
-        }
-    }
-
-    /// Parse a bytestring as a IEEE 802.15.4 frame
-    ///
-    /// Full content of the frame must be available.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///   use nrf_radio::error::Error;
-    ///   use nrf_radio::ieee802154::frame::Frame;
-    ///
-    ///   let frame_bytes = [
-    ///       16u8, // PHR
-    ///       0x61, 0x88, // FCF
-    ///       0x5e, // SeqNum
-    ///       0x4d, 0x48, // Dst Pan Id
-    ///       0x34, 0x12, // Dst Addr
-    ///       0xef, 0xcd, // Src Addr
-    ///       0x01, 0x02, 0x03, 0x04, 0x05, // Payload
-    ///       0x00, 0x00, // MFR
-    ///   ];
-    ///
-    ///   let mut frame = Frame::new();
-    ///
-    ///   let result = frame.parse(&frame_bytes);
-    ///   assert!(result.is_ok());
-    ///
-    ///   let result = frame.parse(&frame_bytes[0..3]);
-    ///   assert_eq!(result, Err(Error::InvalidFrame));
-    /// ```
-    pub fn parse(&mut self, buffer: &[u8]) -> Result<(), Error> {
-        if buffer.is_empty() {
-            return Err(Error::WouldBlock);
-        }
-        let parsed_len = self.parse_available_part(buffer)?;
-
-        if parsed_len == buffer.len() && parsed_len == Frame::len(buffer) + 1 {
-            Ok(())
-        } else {
-            Err(Error::InvalidFrame)
-        }
-    }
-
     /// Parse a bytestring containing a part of IEEE 802.15.4 frame
     ///
     /// # Examples
     ///
     /// ```
     ///   use nrf_radio::error::Error;
-    ///   use nrf_radio::ieee802154::frame::Frame;
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
     ///
     ///   let frame_bytes = [
     ///       16u8, // PHR
@@ -633,8 +604,8 @@ impl Frame {
     ///   let result = frame.parse_available_part(&frame_bytes[0..3]);
     ///   assert!(result.is_ok());
     ///
-    ///   assert_eq!(frame.get_ar(), Ok(Some(true)));
-    ///   assert_eq!(frame.get_sequence_number(), Err(Error::NotYetParsedField));
+    ///   assert_eq!(frame.ar(), Ok(Some(true)));
+    ///   assert_eq!(frame.sequence_number(), Err(Error::NotYetParsedField));
     /// ```
     pub fn parse_available_part(&mut self, frame_part: &[u8]) -> Result<usize, Error> {
         if frame_part.is_empty() {
@@ -668,7 +639,7 @@ impl Frame {
 
     /// Get length of the frame indicated by PHR
     /// ```
-    ///   use nrf_radio::ieee802154::frame::Frame;
+    ///   use nrf_radio::ieee802154::frame::{Frame, Parser};
     ///
     ///   let data_frame_bytes = [
     ///       22u8, // PHR
@@ -901,6 +872,78 @@ impl Frame {
     }
 }
 
+impl Parser for Frame {
+    fn parse(&mut self, buffer: &[u8]) -> Result<(), Error> {
+        if buffer.is_empty() {
+            return Err(Error::WouldBlock);
+        }
+        let parsed_len = self.parse_available_part(buffer)?;
+
+        if parsed_len == buffer.len() && parsed_len == Frame::len(buffer) + 1 {
+            Ok(())
+        } else {
+            Err(Error::InvalidFrame)
+        }
+    }
+
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn r#type<'a>(&'a self) -> Result<&'a Type, Error> {
+        match &self.r#type {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(r#type) => Ok(r#type),
+        }
+    }
+
+    fn frame_pending(&self) -> Result<Option<bool>, Error> {
+        match self.frame_pending {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(fp) => Ok(fp),
+        }
+    }
+
+    fn ar(&self) -> Result<Option<bool>, Error> {
+        match self.ar {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(ar) => Ok(ar),
+        }
+    }
+
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn version<'a>(&'a self) -> Result<&'a Option<Version>, Error> {
+        match &self.version {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(version) => Ok(version),
+        }
+    }
+
+    fn sequence_number(&self) -> Result<Option<u8>, Error> {
+        match self.seq_num {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(seq_num) => Ok(seq_num),
+        }
+    }
+
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn dst_pan_id<'a>(&'a self) -> Result<&'a Option<[u8; PAN_ID_SIZE]>, Error> {
+        match &self.dst_pan_id {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(pan_id) => Ok(pan_id),
+        }
+    }
+
+    // automock requires named lifetimes here for some reason
+    #[allow(clippy::needless_lifetimes)]
+    fn dst_address<'a>(&'a self) -> Result<&'a Option<Addr>, Error> {
+        match &self.dst_addr {
+            ParseStatus::Unknown => Err(Error::NotYetParsedField),
+            ParseStatus::Known(addr) => Ok(addr),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,17 +967,14 @@ mod tests {
         let buffer = buffer_from_frame(frame_data);
         let frame = Frame::from_frame_buffer(&buffer).unwrap();
 
-        assert_eq!(frame.get_type(), Ok(&Type::Data));
-        assert_eq!(frame.get_frame_pending(), Ok(Some(false)));
-        assert_eq!(frame.get_ar(), Ok(Some(false)));
-        assert_eq!(frame.get_version(), Ok(&Some(Version::V2006)));
-        assert_eq!(frame.get_sequence_number(), Ok(Some(0x5e)));
-        assert_eq!(frame.get_dst_pan_id(), Ok(&Some([0x01u8, 0x23])));
-        assert_eq!(
-            frame.get_dst_address(),
-            Ok(&Some(Addr::Short([0xff, 0xff])))
-        );
-        //assert_eq!(frame.get_src_pan_id(), Ok(&Some([0x01u8, 0x23])));
+        assert_eq!(frame.r#type(), Ok(&Type::Data));
+        assert_eq!(frame.frame_pending(), Ok(Some(false)));
+        assert_eq!(frame.ar(), Ok(Some(false)));
+        assert_eq!(frame.version(), Ok(&Some(Version::V2006)));
+        assert_eq!(frame.sequence_number(), Ok(Some(0x5e)));
+        assert_eq!(frame.dst_pan_id(), Ok(&Some([0x01u8, 0x23])));
+        assert_eq!(frame.dst_address(), Ok(&Some(Addr::Short([0xff, 0xff]))));
+        //assert_eq!(frame.src_pan_id(), Ok(&Some([0x01u8, 0x23])));
     }
 
     #[test]
@@ -952,17 +992,14 @@ mod tests {
         let buffer = buffer_from_frame(frame_data);
         let frame = Frame::from_frame_buffer(&buffer).unwrap();
 
-        assert_eq!(frame.get_type(), Ok(&Type::Data));
-        assert_eq!(frame.get_frame_pending(), Ok(Some(false)));
-        assert_eq!(frame.get_ar(), Ok(Some(true)));
-        assert_eq!(frame.get_version(), Ok(&Some(Version::V2006)));
-        assert_eq!(frame.get_sequence_number(), Ok(Some(0xff)));
-        assert_eq!(frame.get_dst_pan_id(), Ok(&Some([0xfeu8, 0xde])));
-        assert_eq!(
-            frame.get_dst_address(),
-            Ok(&Some(Addr::Short([0x00, 0xaa])))
-        );
-        //assert_eq!(frame.get_src_pan_id(), Ok(&Some([0x01u8, 0x23])));
+        assert_eq!(frame.r#type(), Ok(&Type::Data));
+        assert_eq!(frame.frame_pending(), Ok(Some(false)));
+        assert_eq!(frame.ar(), Ok(Some(true)));
+        assert_eq!(frame.version(), Ok(&Some(Version::V2006)));
+        assert_eq!(frame.sequence_number(), Ok(Some(0xff)));
+        assert_eq!(frame.dst_pan_id(), Ok(&Some([0xfeu8, 0xde])));
+        assert_eq!(frame.dst_address(), Ok(&Some(Addr::Short([0x00, 0xaa]))));
+        //assert_eq!(frame.src_pan_id(), Ok(&Some([0x01u8, 0x23])));
     }
 
     #[test]
@@ -980,19 +1017,19 @@ mod tests {
         let buffer = buffer_from_frame(frame_data);
         let frame = Frame::from_frame_buffer(&buffer).unwrap();
 
-        assert_eq!(frame.get_type(), Ok(&Type::Data));
-        assert_eq!(frame.get_frame_pending(), Ok(Some(false)));
-        assert_eq!(frame.get_ar(), Ok(Some(true)));
-        assert_eq!(frame.get_version(), Ok(&Some(Version::V2006)));
-        assert_eq!(frame.get_sequence_number(), Ok(Some(0x00)));
-        assert_eq!(frame.get_dst_pan_id(), Ok(&Some([0x00u8, 0x01])));
+        assert_eq!(frame.r#type(), Ok(&Type::Data));
+        assert_eq!(frame.frame_pending(), Ok(Some(false)));
+        assert_eq!(frame.ar(), Ok(Some(true)));
+        assert_eq!(frame.version(), Ok(&Some(Version::V2006)));
+        assert_eq!(frame.sequence_number(), Ok(Some(0x00)));
+        assert_eq!(frame.dst_pan_id(), Ok(&Some([0x00u8, 0x01])));
         assert_eq!(
-            frame.get_dst_address(),
+            frame.dst_address(),
             Ok(&Some(Addr::Ext([
                 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef
             ])))
         );
-        //assert_eq!(frame.get_src_pan_id(), Ok(&Some([0x01u8, 0x23])));
+        //assert_eq!(frame.src_pan_id(), Ok(&Some([0x01u8, 0x23])));
     }
 
     #[test]
@@ -1006,14 +1043,14 @@ mod tests {
         let buffer = buffer_from_frame(frame_data);
         let frame = Frame::from_frame_buffer(&buffer).unwrap();
 
-        assert_eq!(frame.get_type(), Ok(&Type::Ack));
-        assert_eq!(frame.get_frame_pending(), Ok(Some(false)));
-        assert_eq!(frame.get_ar(), Ok(Some(false)));
-        assert_eq!(frame.get_version(), Ok(&Some(Version::V2003)));
-        assert_eq!(frame.get_sequence_number(), Ok(Some(0x5e)));
-        assert_eq!(frame.get_dst_pan_id(), Ok(&None));
-        assert_eq!(frame.get_dst_address(), Ok(&None));
-        //assert_eq!(frame.get_src_pan_id(), Ok(&Some([0x01u8, 0x23])));
+        assert_eq!(frame.r#type(), Ok(&Type::Ack));
+        assert_eq!(frame.frame_pending(), Ok(Some(false)));
+        assert_eq!(frame.ar(), Ok(Some(false)));
+        assert_eq!(frame.version(), Ok(&Some(Version::V2003)));
+        assert_eq!(frame.sequence_number(), Ok(Some(0x5e)));
+        assert_eq!(frame.dst_pan_id(), Ok(&None));
+        assert_eq!(frame.dst_address(), Ok(&None));
+        //assert_eq!(frame.src_pan_id(), Ok(&Some([0x01u8, 0x23])));
     }
 
     #[test]
@@ -1033,7 +1070,7 @@ mod tests {
         let buffer = buffer_from_frame(frame_data);
         let frame = Frame::from_frame_buffer(&buffer).unwrap();
 
-        assert_eq!(frame.get_type(), Ok(&Type::Data));
-        assert_eq!(frame.get_sequence_number(), Ok(Some(0xde)));
+        assert_eq!(frame.r#type(), Ok(&Type::Data));
+        assert_eq!(frame.sequence_number(), Ok(Some(0xde)));
     }
 }
