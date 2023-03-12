@@ -15,11 +15,14 @@ use crate::hw::ppi::{
     self,
     traits::{Allocator, Channel},
 };
-use crate::hw::timer::Timer;
+use crate::hw::timer::{
+    traits::{TaskTrigger, Timer as TimerTrait, Timestamper},
+    Timer, Timestamp,
+};
 use crate::ieee802154::frame::{Frame, Parser};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
-use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources};
+use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources, TxRequest, TxResources};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 // TODO: context as an argument?
@@ -31,10 +34,12 @@ static CALLBACK_DATA: Mutex<Option<CallbackData>> = Mutex::new(None);
 
 struct CallbackData {
     phy: &'static Phy,
-    timer: &'static dyn Timer<ppi::Channel>,
+    timer: &'static Timer,
     pib: &'static Pib,
     ppi_allocator: &'static ppi::Allocator,
     tasklet_queue: &'static TaskletQueue<'static>,
+
+    timer_trigger_handle: Option<<Timer as TaskTrigger>::TriggerHandle>,
 
     rx_result: Option<Result<(FrameBuffer<'static>, u64), Error>>,
     receive_done_tasklet: Tasklet<'static>,
@@ -95,7 +100,7 @@ impl Rx {
         pib: &'static Pib,
         tasklet_queue: &'static TaskletQueue<'static>,
         ppi_allocator: &'static ppi::Allocator,
-        timer: &'static dyn Timer<ppi::Channel>,
+        timer: &'static Timer,
     ) -> Self {
         let new_callback_data = CallbackData {
             phy,
@@ -103,6 +108,7 @@ impl Rx {
             tasklet_queue,
             ppi_allocator,
             timer,
+            timer_trigger_handle: None,
             rx_result: None,
             receive_done_tasklet: Tasklet::new(Rx::receive_done_tasklet_fn, &CALLBACK_DATA),
             receive_done_tasklet_ref: None,
@@ -246,24 +252,22 @@ impl Rx {
             debug_assert!(result.is_ok());
             ppi_ch.enable();
             d.phy.rx(
-                RxRequest::new(rx_buffer, Rx::phy_callback, self.callback_data)
+                RxRequest::new(rx_buffer, Rx::phy_rx_callback, self.callback_data)
                     .with_ppi_channel_on_phyend(ppi_ch)
                     .now(),
             )
         })
     }
 
-    fn phy_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
+    fn phy_rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
         defmt::info!("rx callback");
 
-        if let Some(ppi_ch) = resources.phyend_ppi_channel() {
-            Rx::use_data_from_context(context, |d| {
-                ppi_ch.disable();
-                let result = d.timer.stop_capturing_timestamps(&ppi_ch);
-                debug_assert!(result.is_ok());
-            });
-            drop(ppi_ch);
-        }
+        let ppi_ch = resources.phyend_ppi_channel().unwrap();
+        Rx::use_data_from_context(context, |d| {
+            ppi_ch.disable();
+            let result = d.timer.stop_capturing_timestamps(&ppi_ch);
+            debug_assert!(result.is_ok());
+        });
 
         match result {
             Ok(rx_ok) => {
@@ -277,56 +281,130 @@ impl Rx {
                         let ar_option = frame.ar().unwrap();
                         let ack_requested = ar_option.is_some() && ar_option.unwrap();
 
+                        let phyend_timestamp = Rx::phyend_timestamp(d);
+
                         if filter_passed && ack_requested {
-                            // TODO: Handle transmitting ACK
                             // TODO: Handle transmitting ACK after relevant fields are received
                             //       (src addr, security?)
-                            // TODO: Report received frame for us (after ACK transmitted?)!
+
+                            // TODO: Move ack generation to a separated module
+                            // TODO: Correctly create Imm and Enh ack based on the frame version
+                            let ack_frame = [
+                                0x05u8,
+                                0x02,
+                                0x00,
+                                frame.sequence_number().unwrap().unwrap(),
+                                0x00,
+                                0x00,
+                            ];
+                            let prev_rx_result = d
+                                .rx_result
+                                .replace(Ok((rx_ok.frame, phyend_timestamp.into())));
+                            debug_assert!(prev_rx_result.is_none());
+
+                            // TODO: Replace magic number 192 with AIFS
+                            // TODO: Get TX ramp up time + some other delay (40 + 23) from Phy
+                            let target_tx_time = Timestamp::wrapping_add(phyend_timestamp, 192);
+                            let target_tx_start_time = Timestamp::wrapping_sub(target_tx_time, 63);
+                            let timer_result =
+                                d.timer.trigger_task_at(&ppi_ch, target_tx_start_time);
+                            d.timer_trigger_handle = Some(timer_result.unwrap());
+
+                            ppi_ch.enable();
+
+                            let tx_request =
+                                TxRequest::new(&ack_frame, Rx::phy_tx_ack_callback, context)
+                                    .at_event(ppi_ch);
+                            let tx_detectability_delay = tx_request.detectability_delay();
+                            let tx_detectability_timestamp = Timestamp::wrapping_add(
+                                target_tx_start_time,
+                                tx_detectability_delay,
+                            );
+                            let tx_result = d.phy.tx(tx_request);
+                            debug_assert!(tx_result.is_ok());
+
+                            // TODO: error handling
+                            //       stop tx operation and report received frame immediately?
+                            if d.timer
+                                .was_timestamp_in_past(&target_tx_start_time)
+                                .unwrap()
+                            {
+                                while !d
+                                    .timer
+                                    .was_timestamp_in_past(&tx_detectability_timestamp)
+                                    .unwrap()
+                                {}
+                                if !d.phy.was_tx_started().unwrap() {
+                                    let rx_result = d.rx_result.take().unwrap();
+                                    Rx::notify_rx_done(d, rx_result);
+                                    // TODO: abort hanged TX in Phy
+                                    /*
+                                    let result = d
+                                        .timer
+                                        .stop_triggering_task(d.timer_trigger_handle.take().unwrap(), &ppi_ch);
+                                    debug_assert!(result.is_ok());
+                                    */
+                                }
+                            }
                         } else {
                             let result = if filter_passed || d.pib.get_promiscuous() {
-                                Ok((rx_ok.frame, d.timer.timestamp().unwrap().into()))
+                                Ok((rx_ok.frame, phyend_timestamp.into()))
                             } else {
                                 Err(filter_result.err().unwrap())
                             };
 
-                            notify_rx_done(d, result);
+                            Rx::notify_rx_done(d, result);
                         }
                     });
                 } else {
                     Rx::use_data_from_context(context, |d| {
                         if d.pib.get_promiscuous() {
-                            notify_rx_done(
-                                d,
-                                Ok((rx_ok.frame, d.timer.timestamp().unwrap().into())),
-                            )
+                            Rx::notify_rx_done(d, Ok((rx_ok.frame, Rx::phyend_timestamp(d).into())))
                         } else {
-                            notify_rx_done(d, Err(Error::InvalidFrame))
+                            Rx::notify_rx_done(d, Err(Error::InvalidFrame))
                         }
                     });
                 }
             }
             Err(e) => {
-                Rx::use_data_from_context(context, |d| notify_rx_done(d, Err(e)));
+                Rx::use_data_from_context(context, |d| Rx::notify_rx_done(d, Err(e)));
             }
         }
+    }
 
-        // TODO: move filtering to callbacks called while the frame is being received
+    fn phyend_timestamp(d: &CallbackData) -> Timestamp {
+        d.timer.timestamp().unwrap()
+    }
 
-        fn notify_rx_done(
-            d: &mut CallbackData,
-            result: Result<(FrameBuffer<'static>, u64), Error>,
-        ) {
-            defmt::info!("scheduling rx done notification");
-            let prev_result = d.rx_result.replace(result);
-            debug_assert!(prev_result.is_none());
-            // TODO: call the callback directly instead of using a tasklet, and let user to
-            //       decide in the callback to defer to tasklet?
-            //       I expect some users like async RX could prefer to restart RX from ISR context
-            //       to potentially catch more frames
-            // TODO: something safer than unwrap?
-            d.tasklet_queue
-                .push(d.receive_done_tasklet_ref.take().unwrap());
-        }
+    fn phy_tx_ack_callback(
+        _result: Result<(), Error>,
+        context: Context,
+        resources: &mut TxResources,
+    ) {
+        Rx::use_data_from_context(context, |d| {
+            let ppi_ch = resources.start_channel().unwrap();
+            ppi_ch.disable();
+            let result = d
+                .timer
+                .stop_triggering_task(d.timer_trigger_handle.take().unwrap(), &ppi_ch);
+            debug_assert!(result.is_ok());
+
+            let rx_result = d.rx_result.take();
+            Rx::notify_rx_done(d, rx_result.unwrap())
+        });
+    }
+
+    fn notify_rx_done(d: &mut CallbackData, result: Result<(FrameBuffer<'static>, u64), Error>) {
+        defmt::info!("scheduling rx done notification");
+        let prev_result = d.rx_result.replace(result);
+        debug_assert!(prev_result.is_none());
+        // TODO: call the callback directly instead of using a tasklet, and let user to
+        //       decide in the callback to defer to tasklet?
+        //       I expect some users like async RX could prefer to restart RX from ISR context
+        //       to potentially catch more frames
+        // TODO: something safer than unwrap?
+        d.tasklet_queue
+            .push(d.receive_done_tasklet_ref.take().unwrap());
     }
 
     fn receive_done_tasklet_fn(tasklet_ref: &'static mut TaskletListItem, context: Context) {
