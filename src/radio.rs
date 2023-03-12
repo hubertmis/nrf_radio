@@ -246,6 +246,20 @@ impl<'req> TxRequest<'req> {
         self.tx_data.fsm_mod.start_type = Some(OperationStartType::Now);
         self
     }
+
+    /// Get time in microseconds that must pass from the time operation was supposed to be
+    /// triggered until the start of the operation can be detected
+    ///
+    /// This function is intended to be used to avoid race conditions if the operation is supposed
+    /// to be started asynchronously by an event, but it is not clear if the operation was prepared
+    /// before the async event was triggered. The requestor should wait the detectability delay and
+    /// then check if the operation was actually started.
+    pub fn detectability_delay(&self) -> u32 {
+        let ppi_propagation = 1;
+        let ramp_up = 40;
+
+        ppi_propagation + ramp_up
+    }
 }
 
 /// Internal data required in the TX state
@@ -508,6 +522,20 @@ impl RxRequest {
         self.fsm_mod.start_type = Some(OperationStartType::Now);
         self
     }
+
+    /// Get time in microseconds that must pass from the time operation was supposed to be
+    /// triggered until the start of the operation can be detected
+    ///
+    /// This function is intended to be used to avoid race conditions if the operation is supposed
+    /// to be started asynchronously by an event, but it is not clear if the operation was prepared
+    /// before the async event was triggered. The requestor should wait the detectability delay and
+    /// then check if the operation was actually started.
+    pub fn detectability_delay(&self) -> u32 {
+        let ppi_propagation = 1;
+        let ramp_up = 40;
+
+        ppi_propagation + ramp_up
+    }
 }
 
 /// Internal data required in the RX state
@@ -756,6 +784,9 @@ impl Phy {
             .shorts
             .write(|w| w.txready_start().set_bit().phyend_disable().set_bit());
         i.radio
+            .events_txready
+            .write(|w| w.events_txready().clear_bit());
+        i.radio
             .events_phyend
             .write(|w| w.events_phyend().clear_bit());
 
@@ -828,6 +859,51 @@ impl Phy {
                 i.state = State::Tx(request.tx_data);
                 Ok(())
             }
+            _ => Err(Error::WouldBlock),
+        })
+    }
+
+    /// Check if the lately requested TX operation has started
+    ///
+    /// Result of this function is undefined until [detectability delay](TxRequest::detectability_delay)
+    /// elapses from the moment the operation is triggered
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate nrf_radio;
+    /// # missing_test_fns!();
+    /// use core::any::Any;
+    /// use nrf52840_hal::pac::Peripherals;
+    /// use nrf_radio::radio::{Context, Phy, TxRequest, TxResources};
+    /// use nrf_radio::error::Error;
+    ///
+    /// fn tx_callback(result: Result<(), Error>, context: Context, resources: &mut TxResources) {
+    ///   println!("Packet tx procedure finished");
+    /// }
+    ///
+    /// fn main() {
+    ///   let peripherals = Peripherals::take().unwrap();
+    ///   let phy = Phy::new(&peripherals.RADIO);
+    ///   phy.configure_802154();
+    ///
+    ///   let frame: [u8; 17] = [16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12,
+    ///                              0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+    ///   let tx_req = TxRequest::new(&frame, tx_callback, &None::<u8>).now();
+    ///   let detectability_delay = tx_req.detectability_delay();
+    ///   let result = phy.tx(tx_req);
+    ///   assert_eq!(result, Ok(()));
+    ///
+    ///   // Wait at least detectability_delay
+    ///
+    ///   let was_tx_started = phy.was_tx_started();
+    ///   assert_eq!(was_tx_started, Ok(true));
+    /// }
+    /// ```
+    pub fn was_tx_started(&self) -> Result<bool, Error> {
+        self.use_isr_data(|i| match &i.state {
+            State::Idle => Ok(true),
+            State::Tx(_) => Ok(i.radio.events_txready.read().events_txready().bit_is_set()),
             _ => Err(Error::WouldBlock),
         })
     }
@@ -1728,5 +1804,44 @@ mod tests {
         }
         assert!(radio_mock.intenclr.read().crcok().bit_is_set());
         assert!(radio_mock.intenclr.read().crcerror().bit_is_set());
+    }
+
+    #[test]
+    #[serial]
+    #[cfg_attr(miri, ignore)]
+    fn test_802154_tx_detects_when_started() {
+        let radio_mock = RadioMock::new();
+        Phy::reset();
+        let phy = Phy::new(&radio_mock);
+        phy.configure_802154();
+
+        let frame: [u8; 17] = [
+            16, 0x41, 0x98, 0xaa, 0xcd, 0xab, 0xff, 0xff, 0x34, 0x12, 0x01, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07,
+        ];
+
+        static mut TX_CALLED: bool = false;
+
+        fn tx_callback(
+            _result: Result<(), Error>,
+            _context: Context,
+            _resources: &mut TxResources,
+        ) {
+            unsafe { TX_CALLED = true };
+        }
+
+        let result = phy.tx(TxRequest::new(&frame, tx_callback, &None::<u8>).now());
+        assert_eq!(result, Ok(()));
+        assert!(!unsafe { TX_CALLED });
+
+        let result = phy.was_tx_started();
+        assert_eq!(result, Ok(false));
+
+        radio_mock
+            .events_txready
+            .write(|w| w.events_txready().set_bit());
+
+        let result = phy.was_tx_started();
+        assert_eq!(result, Ok(true));
     }
 }
