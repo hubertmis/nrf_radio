@@ -7,6 +7,8 @@ pub enum Error {
     NoMemory,
     /// No free resources
     NoResources,
+    /// Requested resource already taken
+    AlreadyTaken,
     /// The passed buffer cannot contain all necessary data
     TooSmallBuffer,
     /// The received frame is invalid

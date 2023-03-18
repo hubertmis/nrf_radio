@@ -24,14 +24,14 @@ use crate::hw::timer::{
 use crate::ieee802154::frame::{Frame, Parser};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
-use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources, TxRequest, TxResources};
+use crate::radio::{Context, Phy, RxOk as PhyRxOk, RxRequest, RxResources, TxRequest, TxResources};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 type AckFrameAllocator = SinglePoolAllocator;
 
 // TODO: context as an argument?
 /// Signature of a callback function called when the requested receive operation is finished
-pub type RxDoneCallback = fn(Result<(FrameBuffer, u64), Error>);
+pub type RxDoneCallback = fn(Result<RxOk, Error>);
 
 // Callbacks are to be called from IRQs. That's why it require static data
 static CALLBACK_DATA: Mutex<Option<CallbackData>> = Mutex::new(None);
@@ -46,10 +46,115 @@ struct CallbackData {
 
     timer_trigger_handle: Option<<Timer as TaskTrigger>::TriggerHandle>,
 
-    rx_result: Option<Result<(FrameBuffer<'static>, u64), Error>>,
+    rx_result: Option<Result<RxOk, Error>>,
     receive_done_tasklet: Tasklet<'static>,
     receive_done_tasklet_ref: Option<&'static mut TaskletListItem<'static>>,
     receive_done_callback: Option<RxDoneCallback>,
+}
+
+/// Data associated with a successful RX operation
+pub struct RxOk {
+    frame: Option<FrameBuffer<'static>>,
+    timestamp: Timestamp,
+    ack: Option<FrameBuffer<'static>>,
+}
+
+impl RxOk {
+    fn new(frame: FrameBuffer<'static>, timestamp: Timestamp) -> Self {
+        Self {
+            frame: Some(frame),
+            timestamp,
+            ack: None,
+        }
+    }
+
+    /// Get received frame
+    ///
+    /// This function moves ownership of the received frame to the caller. It can be used once on
+    /// a single `RxOk` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::ieee802154::rx::RxOk;
+    ///
+    /// fn rx_done_callback(result: Result<RxOk, Error>) {
+    ///   match result {
+    ///     Ok(mut rx_ok) => {
+    ///       // First call always returns `Ok(frame)`.
+    ///       let frame_buffer = rx_ok.frame().unwrap();
+    ///       let phr = frame_buffer[0];
+    ///
+    ///       let frame_result = rx_ok.frame();
+    ///       assert!(frame_result.is_err());
+    ///     },
+    ///     Err(Error::InvalidFrame) => { /* Handle error */ },
+    ///     Err(_) => { /* Handle other errors */ },
+    ///   }
+    /// }
+    /// ```
+    pub fn frame(&mut self) -> Result<FrameBuffer<'static>, Error> {
+        self.frame.take().ok_or(Error::AlreadyTaken)
+    }
+
+    /// Get timestamp of the end of the last on-air part of the received frame
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::ieee802154::rx::RxOk;
+    ///
+    /// fn rx_done_callback(result: Result<RxOk, Error>) {
+    ///   match result {
+    ///     Ok(rx_ok) => {
+    ///       let timestamp = rx_ok.timestamp();
+    ///     },
+    ///     Err(_) => { /* Handle errors */ },
+    ///   }
+    /// }
+    /// ```
+    pub fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+
+    /// Get sent acknowledgement frame (if one was sent)
+    ///
+    /// This function moves ownership of the received frame to the caller. It can be used once on a
+    /// single `RxOk` instance. Calling this function multiple times has the same result as calling
+    /// it when no Ack was sent (returning `None`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nrf_radio::error::Error;
+    /// use nrf_radio::ieee802154::rx::RxOk;
+    ///
+    /// fn rx_done_callback(result: Result<RxOk, Error>) {
+    ///   match result {
+    ///     Ok(mut rx_ok) => {
+    ///       if let Some(ack_frame) = rx_ok.ack_frame() {
+    ///         let ack_phr = ack_frame[0];
+    ///         // Do something with ack content
+    ///       } else {
+    ///         // Ack was not transmitted.
+    ///         // The reason might be no need to transmit an Ack frame or software latency
+    ///         // prevented ack transmission at required time
+    ///       }
+    ///
+    ///       // Each following attempt of getting ack results in None
+    ///       let ack_option = rx_ok.ack_frame();
+    ///       assert!(ack_option.is_none());
+    ///     },
+    ///     Err(Error::InvalidFrame) => { /* Handle error */ },
+    ///     Err(_) => { /* Handle other errors */ },
+    ///   }
+    /// }
+    /// ```
+    pub fn ack_frame(&mut self) -> Option<FrameBuffer<'static>> {
+        self.ack.take()
+    }
 }
 
 /// IEEE 802.15.4 receiver
@@ -203,7 +308,7 @@ impl Rx {
     ///   use nrf_radio::hw::ppi::Allocator;
     ///   use nrf_radio::hw::timer::timer_using_timer::TimerUsingTimer;
     ///   use nrf_radio::ieee802154::pib::Pib;
-    ///   use nrf_radio::ieee802154::rx::Rx;
+    ///   use nrf_radio::ieee802154::rx::{Rx, RxOk};
     ///   use nrf_radio::radio::Phy;
     ///   use nrf_radio::utils::tasklet::TaskletQueue;
     ///
@@ -244,9 +349,9 @@ impl Rx {
     ///
     ///   let result = rx.start(frame_buffer, rx_done_callback);
     ///
-    ///   fn rx_done_callback(result: Result<(FrameBuffer, u64), Error>) {
+    ///   fn rx_done_callback(result: Result<RxOk, Error>) {
     ///     match result {
-    ///       Ok((frame, timestamp)) => { /* Do something with received frame */ },
+    ///       Ok(rx_ok) => { /* Do something with received frame */ },
     ///       Err(Error::InvalidFrame) => { /* Handle error */ },
     ///       Err(_) => { /* Handle other errors */ },
     ///     }
@@ -274,7 +379,11 @@ impl Rx {
         })
     }
 
-    fn phy_rx_callback(result: Result<RxOk, Error>, context: Context, resources: &mut RxResources) {
+    fn phy_rx_callback(
+        result: Result<PhyRxOk, Error>,
+        context: Context,
+        resources: &mut RxResources,
+    ) {
         defmt::info!("rx callback");
 
         let ppi_ch = resources.phyend_ppi_channel().unwrap();
@@ -302,16 +411,15 @@ impl Rx {
                             // TODO: Handle transmitting ACK after relevant fields are received
                             //       (src addr, security?)
 
-                            let prev_rx_result = d
-                                .rx_result
-                                .replace(Ok((rx_ok.frame, phyend_timestamp.into())));
-                            debug_assert!(prev_rx_result.is_none());
+                            let mut new_rx_result = RxOk::new(rx_ok.frame, phyend_timestamp);
 
-                            // TODO: Move ack generation to a separated module
-                            // TODO: Correctly create Imm and Enh ack based on the frame version
                             let ack_generate_result =
                                 AckGenerator::new(d.ack_frame_allocator).generate_ack_for(&frame);
                             let ack_frame = ack_generate_result.unwrap();
+                            new_rx_result.ack = Some(ack_frame);
+
+                            let prev_rx_result = d.rx_result.replace(Ok(new_rx_result));
+                            debug_assert!(prev_rx_result.is_none());
 
                             // TODO: Replace magic number 192 with AIFS
                             // TODO: Get TX ramp up time + some other delay (40 + 23) from Phy
@@ -323,8 +431,11 @@ impl Rx {
 
                             ppi_ch.enable();
 
+                            let rx_result_ref = d.rx_result.as_ref().unwrap();
+                            let rx_ok_ref = rx_result_ref.as_ref().unwrap();
+                            let ack_ref = rx_ok_ref.ack.as_ref().unwrap();
                             let tx_request =
-                                TxRequest::new(&ack_frame, Rx::phy_tx_ack_callback, context)
+                                TxRequest::new(ack_ref, Rx::phy_tx_ack_callback, context)
                                     .at_event(ppi_ch);
                             let tx_detectability_delay = tx_request.detectability_delay();
                             let tx_detectability_timestamp = Timestamp::wrapping_add(
@@ -334,8 +445,6 @@ impl Rx {
                             let tx_result = d.phy.tx(tx_request);
                             debug_assert!(tx_result.is_ok());
 
-                            // TODO: error handling
-                            //       stop tx operation and report received frame immediately?
                             if d.timer
                                 .was_timestamp_in_past(&target_tx_start_time)
                                 .unwrap()
@@ -346,7 +455,8 @@ impl Rx {
                                     .unwrap()
                                 {}
                                 if !d.phy.was_tx_started().unwrap() {
-                                    let rx_result = d.rx_result.take().unwrap();
+                                    let mut rx_result = d.rx_result.take().unwrap();
+                                    rx_result.as_mut().unwrap().ack = None;
                                     Rx::notify_rx_done(d, rx_result);
                                     // TODO: abort hanged TX in Phy
                                     /*
@@ -359,7 +469,7 @@ impl Rx {
                             }
                         } else {
                             let result = if filter_passed || d.pib.get_promiscuous() {
-                                Ok((rx_ok.frame, phyend_timestamp.into()))
+                                Ok(RxOk::new(rx_ok.frame, phyend_timestamp))
                             } else {
                                 Err(filter_result.err().unwrap())
                             };
@@ -370,7 +480,10 @@ impl Rx {
                 } else {
                     Rx::use_data_from_context(context, |d| {
                         if d.pib.get_promiscuous() {
-                            Rx::notify_rx_done(d, Ok((rx_ok.frame, Rx::phyend_timestamp(d).into())))
+                            Rx::notify_rx_done(
+                                d,
+                                Ok(RxOk::new(rx_ok.frame, Rx::phyend_timestamp(d))),
+                            )
                         } else {
                             Rx::notify_rx_done(d, Err(Error::InvalidFrame))
                         }
@@ -405,7 +518,7 @@ impl Rx {
         });
     }
 
-    fn notify_rx_done(d: &mut CallbackData, result: Result<(FrameBuffer<'static>, u64), Error>) {
+    fn notify_rx_done(d: &mut CallbackData, result: Result<RxOk, Error>) {
         defmt::info!("scheduling rx done notification");
         let prev_result = d.rx_result.replace(result);
         debug_assert!(prev_result.is_none());
