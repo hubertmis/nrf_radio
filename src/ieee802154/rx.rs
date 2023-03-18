@@ -7,10 +7,12 @@
 //! * sending Acks if necessary
 //! * decrypting frames on-the-fly
 
+use super::ack_generator::AckGenerator;
 use super::rx_filter::{Filter, RxFilter};
 use crate::crit_sect;
 use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
+use crate::frm_mem_mng::single_pool_allocator::SinglePoolAllocator;
 use crate::hw::ppi::{
     self,
     traits::{Allocator, Channel},
@@ -25,6 +27,8 @@ use crate::mutex::Mutex;
 use crate::radio::{Context, Phy, RxOk, RxRequest, RxResources, TxRequest, TxResources};
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
+type AckFrameAllocator = SinglePoolAllocator;
+
 // TODO: context as an argument?
 /// Signature of a callback function called when the requested receive operation is finished
 pub type RxDoneCallback = fn(Result<(FrameBuffer, u64), Error>);
@@ -38,6 +42,7 @@ struct CallbackData {
     pib: &'static Pib,
     ppi_allocator: &'static ppi::Allocator,
     tasklet_queue: &'static TaskletQueue<'static>,
+    ack_frame_allocator: &'static AckFrameAllocator,
 
     timer_trigger_handle: Option<<Timer as TaskTrigger>::TriggerHandle>,
 
@@ -62,6 +67,7 @@ impl Rx {
     /// # missing_test_fns!();
     /// # fn main() {
     ///   use nrf52840_hal::pac::Peripherals;
+    ///   use nrf_radio::frm_mem_mng::single_pool_allocator::SinglePoolAllocator as FrameAllocator;
     ///   use nrf_radio::hw::ppi::legacy_ppi::PpiAllocator;
     ///   use nrf_radio::hw::timer::timer_using_timer::TimerUsingTimer;
     ///   use nrf_radio::ieee802154::pib::Pib;
@@ -74,6 +80,7 @@ impl Rx {
     ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
     ///   static mut PPI_ALLOC: Option<PpiAllocator> = None;
     ///   static mut TIMER: Option<TimerUsingTimer> = None;
+    ///   static mut FRAME_ALLOCATOR: Option<FrameAllocator> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -84,12 +91,14 @@ impl Rx {
     ///     TASKLET_QUEUE.replace(TaskletQueue::new());
     ///     PPI_ALLOC.replace(PpiAllocator::new(&peripherals.PPI));
     ///     TIMER.replace(TimerUsingTimer::new(&peripherals.TIMER0));
+    ///     FRAME_ALLOCATOR.replace(FrameAllocator::new());
     ///
     ///     let rx = Rx::new(PHY.as_ref().unwrap(),
     ///                      &PIB,
     ///                      TASKLET_QUEUE.as_ref().unwrap(),
     ///                      PPI_ALLOC.as_ref().unwrap(),
     ///                      TIMER.as_ref().unwrap(),
+    ///                      FRAME_ALLOCATOR.as_ref().unwrap(),
     ///                     );
     ///   }
     ///
@@ -101,6 +110,7 @@ impl Rx {
         tasklet_queue: &'static TaskletQueue<'static>,
         ppi_allocator: &'static ppi::Allocator,
         timer: &'static Timer,
+        ack_frame_allocator: &'static AckFrameAllocator,
     ) -> Self {
         let new_callback_data = CallbackData {
             phy,
@@ -108,6 +118,7 @@ impl Rx {
             tasklet_queue,
             ppi_allocator,
             timer,
+            ack_frame_allocator,
             timer_trigger_handle: None,
             rx_result: None,
             receive_done_tasklet: Tasklet::new(Rx::receive_done_tasklet_fn, &CALLBACK_DATA),
@@ -186,9 +197,9 @@ impl Rx {
     /// # fn main() {
     ///   use nrf52840_hal::pac::Peripherals;
     ///   use nrf_radio::error::Error;
-    ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator;
+    ///   use nrf_radio::frm_mem_mng::frame_allocator::FrameAllocator as FrameAllocatorTrait;
     ///   use nrf_radio::frm_mem_mng::frame_buffer::FrameBuffer;
-    ///   use nrf_radio::frm_mem_mng::single_frame_allocator::SingleFrameAllocator;
+    ///   use nrf_radio::frm_mem_mng::single_pool_allocator::SinglePoolAllocator as FrameAllocator;
     ///   use nrf_radio::hw::ppi::Allocator;
     ///   use nrf_radio::hw::timer::timer_using_timer::TimerUsingTimer;
     ///   use nrf_radio::ieee802154::pib::Pib;
@@ -201,6 +212,7 @@ impl Rx {
     ///   static mut TASKLET_QUEUE: Option<TaskletQueue> = None;
     ///   static mut PPI_ALLOC: Option<Allocator> = None;
     ///   static mut TIMER: Option<TimerUsingTimer> = None;
+    ///   static mut FRAME_ALLOCATOR: Option<FrameAllocator> = None;
     ///
     ///   let peripherals = Peripherals::take().unwrap();
     ///
@@ -211,20 +223,23 @@ impl Rx {
     ///     TASKLET_QUEUE.replace(TaskletQueue::new());
     ///     PPI_ALLOC.replace(Allocator::new(&peripherals.PPI));
     ///     TIMER.replace(TimerUsingTimer::new(&peripherals.TIMER0));
+    ///     FRAME_ALLOCATOR.replace(FrameAllocator::new());
     ///   }
     ///
     ///   let rx;
+    ///   let frame_allocator;
     ///   // Safety: at this point no other module has access to static variables
     ///   unsafe {
+    ///     frame_allocator = FRAME_ALLOCATOR.as_ref().unwrap();
     ///     rx = Rx::new(PHY.as_ref().unwrap(),
     ///                  &PIB,
     ///                  TASKLET_QUEUE.as_ref().unwrap(),
     ///                  PPI_ALLOC.as_ref().unwrap(),
     ///                  TIMER.as_ref().unwrap(),
+    ///                  frame_allocator,
     ///                 );
     ///   }
     ///
-    ///   let frame_allocator = SingleFrameAllocator::new();
     ///   let frame_buffer = frame_allocator.get_frame().unwrap();
     ///
     ///   let result = rx.start(frame_buffer, rx_done_callback);
@@ -287,20 +302,16 @@ impl Rx {
                             // TODO: Handle transmitting ACK after relevant fields are received
                             //       (src addr, security?)
 
-                            // TODO: Move ack generation to a separated module
-                            // TODO: Correctly create Imm and Enh ack based on the frame version
-                            let ack_frame = [
-                                0x05u8,
-                                0x02,
-                                0x00,
-                                frame.sequence_number().unwrap().unwrap(),
-                                0x00,
-                                0x00,
-                            ];
                             let prev_rx_result = d
                                 .rx_result
                                 .replace(Ok((rx_ok.frame, phyend_timestamp.into())));
                             debug_assert!(prev_rx_result.is_none());
+
+                            // TODO: Move ack generation to a separated module
+                            // TODO: Correctly create Imm and Enh ack based on the frame version
+                            let ack_generate_result =
+                                AckGenerator::new(d.ack_frame_allocator).generate_ack_for(&frame);
+                            let ack_frame = ack_generate_result.unwrap();
 
                             // TODO: Replace magic number 192 with AIFS
                             // TODO: Get TX ramp up time + some other delay (40 + 23) from Phy
