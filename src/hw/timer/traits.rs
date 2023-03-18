@@ -70,7 +70,8 @@ pub trait TaskTrigger {
 
     /// Deconfigure hardware from publishing timer event to the passed PPI channel
     ///
-    /// The passed `ppi_ch` must be the same that was passed to the [`publish_task_to`] method.
+    /// The passed `ppi_ch` must be the same that was passed to the
+    /// [`trigger_task_at`](TaskTrigger::trigger_task_at) method.
     /// The object implementing this trait does not keep reference to `ppi_ch` to avoid borrowing
     /// it while the timer is active.
     fn stop_triggering_task(

@@ -23,6 +23,9 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    env:
+      RUSTDOCFLAGS: -D warnings
+
     steps:
     - uses: actions/checkout@v3
     - name: Generate docs
