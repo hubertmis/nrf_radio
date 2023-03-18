@@ -7,8 +7,12 @@
 //! * sending Acks if necessary
 //! * decrypting frames on-the-fly
 
-use super::ack_generator::AckGenerator;
-use super::rx_filter::{Filter, RxFilter};
+mod ack_generator;
+mod filter;
+
+use ack_generator::AckGenerator;
+use filter::{Filter, RxFilter};
+
 use crate::crit_sect;
 use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;

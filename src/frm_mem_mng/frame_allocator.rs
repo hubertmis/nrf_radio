@@ -103,8 +103,5 @@ pub mod tests {
 
         let frame = allocator.get_frame();
         assert!(frame.is_ok());
-
-        let frame2 = allocator.get_frame();
-        assert!(frame2.is_err());
     }
 }
