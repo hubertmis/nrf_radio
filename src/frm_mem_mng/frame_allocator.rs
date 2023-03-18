@@ -6,7 +6,7 @@ use mockall::*;
 
 /// Trait of any frame buffers allocator for radio frames
 #[cfg_attr(test, automock)]
-pub trait FrameAllocator {
+pub trait FrameAllocator: Sync {
     // TODO: consider size of the requested frame
     /// Allocates a single frame
     ///

@@ -9,5 +9,6 @@ pub mod frame;
 /// IEEE 802.15.4
 pub mod pib;
 
+pub mod ack_generator;
 pub mod rx;
 pub mod rx_filter;
