@@ -2,6 +2,9 @@
 //!
 //! The limitation of this allocator is capability of allocating single frame buffer.
 //! For unit tests requiring more than a single buffer a more complex allocator must be used.
+//!
+//! Another limitation is performance, because this allocator is busy waiting to get access to the
+//! only available buffer.
 
 #[cfg(not(feature = "mocked_platform"))]
 compile_error!("MockAllocator cannot be used on real hardware");
@@ -82,18 +85,21 @@ impl MockAllocator {
 impl FrameAllocator for MockAllocator {
     fn get_frame(&self) -> Result<FrameBuffer<'static>, Error> {
         MockAllocator::use_frame_allocator(|fa| {
-            let was_allocated =
-                fa.is_allocated
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
-            if was_allocated.is_ok() {
-                Ok(FrameBuffer::new(
-                    // Safety: guarded by is_allocated mutex acquired here
-                    unsafe { &mut DATA },
-                    Some(MockAllocator::release_frame),
-                    &None::<usize>,
-                ))
-            } else {
-                Err(Error::NoMemory)
+            loop {
+                let was_allocated = fa.is_allocated.compare_exchange(
+                    false,
+                    true,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                );
+                if was_allocated.is_ok() {
+                    return Ok(FrameBuffer::new(
+                        // Safety: guarded by is_allocated mutex acquired here
+                        unsafe { &mut DATA },
+                        Some(MockAllocator::release_frame),
+                        &None::<usize>,
+                    ));
+                }
             }
         })
     }
@@ -118,14 +124,8 @@ mod tests {
         test_body_allocate_a_frame(&PHANTOM_ALLOCATOR);
     }
 
-    #[test]
-    #[serial]
-    fn test_allocate_more_frames_than_available() {
-        MockAllocator::reset();
-        MockAllocator::new();
-
-        test_body_allocate_more_frames_than_available(&PHANTOM_ALLOCATOR, NUM_BUFS);
-    }
+    // Intentionally do not test allocating more frames than available, because this implementaion
+    // loops until a frame is available. Such test would hang.
 
     #[test]
     #[serial]

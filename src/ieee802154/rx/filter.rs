@@ -1,7 +1,7 @@
 //! Filtering received frames
 
-use super::frame::{Addr, Parser};
-use super::pib::Pib;
+use super::super::frame::{Addr, Parser};
+use super::super::pib::Pib;
 use crate::error::Error;
 
 const BROADCAST_PAN_ID: [u8; 2] = [0xff, 0xff];
@@ -85,7 +85,7 @@ impl RxFilter for Filter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::frame::MockParser;
+    use super::super::super::frame::MockParser;
     use super::*;
 
     #[test]
