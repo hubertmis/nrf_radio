@@ -57,7 +57,8 @@ impl PpiAllocator {
     pub fn new(ppi: &PpiRegisterBlock) -> Self {
         Self {
             periph: PpiPeriphWrapper::new(ppi),
-            channels_availability: array_init::array_init(|_| AtomicBool::new(true)),
+            // using a magic number because of https://github.com/JoshMcguigan/arr_macro/issues/2
+            channels_availability: arr_macro::arr![AtomicBool::new(true); 20],
         }
     }
 

@@ -1,3 +1,5 @@
+//! A simple allocator capable of allocating globally single frame
+
 use super::frame_allocator::FrameAllocator;
 use super::frame_buffer::{DropMetadata, FrameBuffer};
 use crate::crit_sect;
@@ -132,22 +134,50 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_allocated_frame_stored_in_static_variable() {
+    fn test_allocated_frame_dropped_after_released() {
         SingleFrameAllocator::reset();
         SingleFrameAllocator::new();
 
-        test_body_allocated_frame_stored_in_static_variable(&PHANTOM_ALLOCATOR, NUM_BUFS);
+        test_body_allocated_frame_dropped_after_released(&PHANTOM_ALLOCATOR, NUM_BUFS);
+    }
+
+    #[test]
+    #[serial]
+    fn test_allocated_frame_stored_in_static_variable() {
+        SingleFrameAllocator::reset();
+        let allocator = SingleFrameAllocator::new();
+
+        static mut STATIC_FRAME: Option<FrameBuffer> = None;
+
+        {
+            let frame = allocator.get_frame();
+            assert!(frame.is_ok());
+            let frame = Some(frame.unwrap());
+            unsafe { STATIC_FRAME = frame };
+        }
+
+        let frame = allocator.get_frame();
+        assert!(frame.is_err());
     }
 
     #[test]
     #[serial]
     fn test_allocated_frame_dropped_after_released_from_static_variable() {
         SingleFrameAllocator::reset();
-        SingleFrameAllocator::new();
+        let allocator = SingleFrameAllocator::new();
 
-        test_body_allocated_frame_dropped_after_released_from_static_variable(
-            &PHANTOM_ALLOCATOR,
-            NUM_BUFS,
-        );
+        static mut STATIC_FRAME: Option<FrameBuffer> = None;
+
+        {
+            let frame = allocator.get_frame();
+            assert!(frame.is_ok());
+            let frame = Some(frame.unwrap());
+            unsafe { STATIC_FRAME = frame };
+        }
+
+        unsafe { STATIC_FRAME = None };
+
+        let frame = allocator.get_frame();
+        assert!(frame.is_ok());
     }
 }

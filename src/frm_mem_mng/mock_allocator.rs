@@ -129,22 +129,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_allocated_frame_stored_in_static_variable() {
+    fn test_allocated_frame_dropped_after_released() {
         MockAllocator::reset();
         MockAllocator::new();
 
-        test_body_allocated_frame_stored_in_static_variable(&PHANTOM_ALLOCATOR, NUM_BUFS);
-    }
-
-    #[test]
-    #[serial]
-    fn test_allocated_frame_dropped_after_released_from_static_variable() {
-        MockAllocator::reset();
-        MockAllocator::new();
-
-        test_body_allocated_frame_dropped_after_released_from_static_variable(
-            &PHANTOM_ALLOCATOR,
-            NUM_BUFS,
-        );
+        test_body_allocated_frame_dropped_after_released(&PHANTOM_ALLOCATOR, NUM_BUFS);
     }
 }
