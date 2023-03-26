@@ -7,7 +7,7 @@
 
 use super::super::ppi::{traits::Channel as PpiChannelTrait, Channel};
 use super::{
-    traits::{TaskTrigger, Timer, Timestamper},
+    traits::{TaskChannel, TaskTrigger, Timer, TimestampChannel, Timestamper},
     Timestamp,
 };
 use crate::error::Error;
@@ -37,14 +37,14 @@ unsafe impl Sync for TimerPeriphWrapper {} // Is this really safe considering it
                                            // dereference?
 
 const CAPTURE_NOW_CH: usize = 0;
-const CAPTURE_TIMESTAMP_CH: usize = 1;
-const TRIGGER_TASK_CH: usize = 2;
+const CAPTURE_TIMESTAMP_CH: u8 = 1;
+const TRIGGER_TASK_CH: u8 = 2;
 
 /// Timer based on `TIMER` peripheral
 pub struct TimerUsingTimer {
     timer: TimerPeriphWrapper,
-    is_capturing: AtomicBool,
-    is_triggering: AtomicBool,
+    is_timestamp_channel_allocated: AtomicBool,
+    is_task_allocated: AtomicBool,
 }
 
 impl TimerUsingTimer {
@@ -67,8 +67,8 @@ impl TimerUsingTimer {
     pub fn new(timer: &TimerRegisterBlock) -> Self {
         Self {
             timer: TimerPeriphWrapper::new(timer),
-            is_capturing: AtomicBool::new(false),
-            is_triggering: AtomicBool::new(false),
+            is_timestamp_channel_allocated: AtomicBool::new(false),
+            is_task_allocated: AtomicBool::new(false),
         }
     }
 }
@@ -89,67 +89,134 @@ impl Timer for TimerUsingTimer {
     }
 }
 
-impl Timestamper for TimerUsingTimer {
-    fn start_capturing_timestamps(&self, ppi_ch: &Channel) -> Result<(), Error> {
+impl<'t> Timestamper<'t> for TimerUsingTimer {
+    type Channel = TimerTimestampChannel<'t>;
+
+    fn allocate_timestamp_channel(&'t self) -> Result<TimerTimestampChannel<'t>, Error> {
+        self.is_timestamp_channel_allocated
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .map_or(Err(Error::NoResources), |_| {
+                Ok(TimerTimestampChannel::new(self, CAPTURE_TIMESTAMP_CH))
+            })
+    }
+}
+
+/// Timer channel using a `TIMER` peripheral to capture timestamps of PPI events
+///
+/// This abstract channel uses single hardware channel of the `TIMER` peripheral in use
+pub struct TimerTimestampChannel<'ch> {
+    is_capturing: AtomicBool,
+    idx: u8,
+    timer: &'ch TimerUsingTimer,
+}
+
+impl<'ch> TimerTimestampChannel<'ch> {
+    fn new(timer: &'ch TimerUsingTimer, idx: u8) -> Self {
+        Self {
+            is_capturing: AtomicBool::new(false),
+            idx,
+            timer,
+        }
+    }
+}
+
+impl TimestampChannel for TimerTimestampChannel<'_> {
+    fn start_capturing(&mut self, ppi_ch: &Channel) -> Result<(), Error> {
         self.is_capturing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_or(Err(Error::WouldBlock), |_| {
-                ppi_ch.subscribe_by(&self.timer.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _)
+                let idx = self.idx as usize;
+                ppi_ch.subscribe_by(&self.timer.timer.tasks_capture[idx] as *const _)
             })
     }
 
-    fn stop_capturing_timestamps(&self, ppi_ch: &Channel) -> Result<(), Error> {
+    fn stop_capturing(&mut self, ppi_ch: &Channel) -> Result<(), Error> {
         self.is_capturing
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .map_or(Err(Error::WouldBlock), |_| {
-                ppi_ch.stop_subscribing_by(
-                    &self.timer.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _,
-                )
+                let idx = self.idx as usize;
+                ppi_ch.stop_subscribing_by(&self.timer.timer.tasks_capture[idx] as *const _)
             })
     }
 
     fn timestamp(&self) -> Result<u32, Error> {
-        Ok(self.timer.cc[CAPTURE_TIMESTAMP_CH].read().bits())
+        let idx = self.idx as usize;
+        Ok(self.timer.timer.cc[idx].read().bits())
     }
 }
 
-impl TaskTrigger for TimerUsingTimer {
-    type TriggerHandle = TriggerHandle;
+impl Drop for TimerTimestampChannel<'_> {
+    fn drop(&mut self) {
+        assert!(!self.is_capturing.load(Ordering::Relaxed));
+        self.timer
+            .is_timestamp_channel_allocated
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap();
+    }
+}
 
-    fn trigger_task_at(
-        &self,
-        ppi_ch: &Channel,
-        time: Timestamp,
-    ) -> Result<Self::TriggerHandle, Error> {
-        self.is_triggering
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_or(Err(Error::WouldBlock), |_| {
-                self.timer.cc[TRIGGER_TASK_CH].write(|w| w.cc().variant(time));
-                ppi_ch.publish_by(&self.timer.events_compare[TRIGGER_TASK_CH] as *const _)?;
-                Ok(TriggerHandle(TRIGGER_TASK_CH))
+impl<'t> TaskTrigger<'t> for TimerUsingTimer {
+    type Channel = TimerTaskChannel<'t>;
+
+    fn allocate_task_channel(&'t self) -> Result<TimerTaskChannel<'t>, Error> {
+        self.is_task_allocated
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .map_or(Err(Error::NoResources), |_| {
+                Ok(TimerTaskChannel::new(self, TRIGGER_TASK_CH))
             })
     }
+}
 
-    fn stop_triggering_task(
-        &self,
-        handle: Self::TriggerHandle,
-        ppi_ch: &Channel,
-    ) -> Result<(), Error> {
-        if handle.0 != TRIGGER_TASK_CH {
-            return Err(Error::InvalidArgument);
+/// Timer channel using a `TIMER` peripheral to trigger PPI tasks at requested time
+///
+/// This abstract channel uses single hardware channel of the `TIMER` peripheral
+pub struct TimerTaskChannel<'ch> {
+    is_triggering: AtomicBool,
+    idx: u8,
+    timer: &'ch TimerUsingTimer,
+}
+
+impl<'ch> TimerTaskChannel<'ch> {
+    fn new(timer: &'ch TimerUsingTimer, idx: u8) -> Self {
+        Self {
+            is_triggering: AtomicBool::new(false),
+            idx,
+            timer,
         }
+    }
+}
 
+impl TaskChannel for TimerTaskChannel<'_> {
+    fn trigger_at(&mut self, ppi_ch: &Channel, time: Timestamp) -> Result<(), Error> {
         self.is_triggering
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .map_or(Err(Error::WouldBlock), |_| {
-                ppi_ch.stop_publishing_by(&self.timer.events_compare[TRIGGER_TASK_CH] as *const _)
+                let idx = self.idx as usize;
+                self.timer.timer.cc[idx].write(|w| w.cc().variant(time));
+                ppi_ch.publish_by(&self.timer.timer.events_compare[idx] as *const _)?;
+                Ok(())
+            })
+    }
+
+    fn disable(&mut self, ppi_ch: &Channel) -> Result<(), Error> {
+        self.is_triggering
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .map_or(Err(Error::WouldBlock), |_| {
+                let idx = self.idx as usize;
+                ppi_ch.stop_publishing_by(&self.timer.timer.events_compare[idx] as *const _)
             })
     }
 }
 
-/// Handle to a scheduled timer triggering a hardware task
-#[derive(Debug, Eq, PartialEq)]
-pub struct TriggerHandle(usize);
+impl Drop for TimerTaskChannel<'_> {
+    fn drop(&mut self) {
+        assert!(!self.is_triggering.load(Ordering::Relaxed));
+        self.timer
+            .is_task_allocated
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -220,14 +287,91 @@ mod tests {
     fn test_timestamp() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let channel = timer.allocate_timestamp_channel().unwrap();
 
-        let timestamp = timer.timestamp();
+        let timestamp = channel.timestamp();
         assert_eq!(timestamp.unwrap(), 0);
 
         let expected_timestamp = 0xdeadbeefu32;
-        timer_mock.cc[CAPTURE_TIMESTAMP_CH].write(|w| w.cc().variant(expected_timestamp));
-        let timestamp = timer.timestamp();
+        timer_mock.cc[CAPTURE_TIMESTAMP_CH as usize].write(|w| w.cc().variant(expected_timestamp));
+        let timestamp = channel.timestamp();
         assert_eq!(timestamp.unwrap(), expected_timestamp);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_allocate_timestamp_channel() {
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+        let channel_result = timer.allocate_timestamp_channel();
+
+        channel_result.unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_allocating_more_timestamp_channels_than_available_fails() {
+        const NUM_CHANNELS: usize = 1;
+
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+
+        let mut channel_results = [None::<TimerTimestampChannel>; NUM_CHANNELS];
+
+        for i in 0..NUM_CHANNELS {
+            let channel_result = timer.allocate_timestamp_channel();
+            channel_results[i] = Some(channel_result.unwrap());
+        }
+
+        let channel_result = timer.allocate_timestamp_channel();
+        assert!(channel_result.is_err());
+        assert_eq!(channel_result.err(), Some(Error::NoResources));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_timestamp_channels_can_be_reallocated_after_dropped() {
+        const NUM_CHANNELS: usize = 1;
+
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+
+        {
+            let mut channel_results = [None::<TimerTimestampChannel>; NUM_CHANNELS];
+
+            for i in 0..NUM_CHANNELS {
+                let channel_result = timer.allocate_timestamp_channel();
+                channel_results[i] = Some(channel_result.unwrap());
+            }
+
+            // Dropping all allocated channels
+        }
+
+        let channel_result = timer.allocate_timestamp_channel();
+        channel_result.unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    #[cfg_attr(miri, ignore)]
+    fn test_dropping_timestamp_channel_in_use_panics() {
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+        let channel_result = timer.allocate_timestamp_channel();
+
+        let mut ppi_ch_mock = MockChannel::new();
+        ppi_ch_mock.expect_subscribe_by().returning(
+            |_: *const nrf52840_hal::pac::generic::Reg<
+                timer0::tasks_capture::TASKS_CAPTURE_SPEC,
+            >| Ok(()),
+        );
+
+        {
+            let mut channel = channel_result.unwrap();
+            channel.start_capturing(&ppi_ch_mock).unwrap();
+
+            // Channel is dropped at the end of this block
+        }
     }
 
     #[test]
@@ -235,8 +379,10 @@ mod tests {
     fn test_start_capturing() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let mut channel = timer.allocate_timestamp_channel().unwrap();
 
-        let expected_task_ptr = &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _ as u32;
+        let expected_task_ptr =
+            &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -249,8 +395,20 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let result = timer.start_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.start_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
+
+        // Tear down: stop capturing before dropping channel
+        ppi_ch_mock
+            .expect_stop_subscribing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    timer0::tasks_capture::TASKS_CAPTURE_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        channel.stop_capturing(&ppi_ch_mock).unwrap();
     }
 
     #[test]
@@ -258,8 +416,10 @@ mod tests {
     fn test_start_capturing_twice_fails() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let mut channel = timer.allocate_timestamp_channel().unwrap();
 
-        let expected_task_ptr = &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _ as u32;
+        let expected_task_ptr =
+            &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -272,11 +432,23 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let result = timer.start_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.start_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
 
-        let result = timer.start_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.start_capturing(&ppi_ch_mock);
         assert_eq!(result, Err(Error::WouldBlock));
+
+        // Tear down: stop capturing before dropping channel
+        ppi_ch_mock
+            .expect_stop_subscribing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    timer0::tasks_capture::TASKS_CAPTURE_SPEC,
+                >| *t as u32 == expected_task_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        channel.stop_capturing(&ppi_ch_mock).unwrap();
     }
 
     #[test]
@@ -284,10 +456,11 @@ mod tests {
     fn test_stop_capturing_fails_if_not_started() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let mut channel = timer.allocate_timestamp_channel().unwrap();
 
         let ppi_ch_mock = MockChannel::new();
 
-        let result = timer.stop_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.stop_capturing(&ppi_ch_mock);
         assert_eq!(result, Err(Error::WouldBlock));
     }
 
@@ -296,8 +469,10 @@ mod tests {
     fn test_stop_capturing_when_started() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let mut channel = timer.allocate_timestamp_channel().unwrap();
 
-        let expected_task_ptr = &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _ as u32;
+        let expected_task_ptr =
+            &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -309,7 +484,7 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.start_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.start_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
 
         ppi_ch_mock
@@ -321,7 +496,7 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.stop_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.stop_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
     }
 
@@ -330,8 +505,10 @@ mod tests {
     fn test_stop_capturing_twice_fails() {
         let timer_mock = TimerMock::new();
         let timer = TimerUsingTimer::new(&timer_mock);
+        let mut channel = timer.allocate_timestamp_channel().unwrap();
 
-        let expected_task_ptr = &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH] as *const _ as u32;
+        let expected_task_ptr =
+            &timer_mock.tasks_capture[CAPTURE_TIMESTAMP_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -343,7 +520,7 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.start_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.start_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
 
         ppi_ch_mock
@@ -355,11 +532,88 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.stop_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.stop_capturing(&ppi_ch_mock);
         assert!(result.is_ok());
 
-        let result = timer.stop_capturing_timestamps(&ppi_ch_mock);
+        let result = channel.stop_capturing(&ppi_ch_mock);
         assert_eq!(result, Err(Error::WouldBlock));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_allocate_task_channel() {
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+        let channel_result = timer.allocate_task_channel();
+
+        channel_result.unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_allocating_more_task_channels_than_available_fails() {
+        const NUM_CHANNELS: usize = 1;
+
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+
+        let mut channel_results = [None::<TimerTaskChannel>; NUM_CHANNELS];
+
+        for i in 0..NUM_CHANNELS {
+            let channel_result = timer.allocate_task_channel();
+            channel_results[i] = Some(channel_result.unwrap());
+        }
+
+        let channel_result = timer.allocate_task_channel();
+        assert!(channel_result.is_err());
+        assert_eq!(channel_result.err(), Some(Error::NoResources));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_task_channels_can_be_reallocated_after_dropped() {
+        const NUM_CHANNELS: usize = 1;
+
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+
+        {
+            let mut channel_results = [None::<TimerTaskChannel>; NUM_CHANNELS];
+
+            for i in 0..NUM_CHANNELS {
+                let channel_result = timer.allocate_task_channel();
+                channel_results[i] = Some(channel_result.unwrap());
+            }
+
+            // Dropping all allocated channels
+        }
+
+        let channel_result = timer.allocate_task_channel();
+        channel_result.unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    #[cfg_attr(miri, ignore)]
+    fn test_dropping_task_channel_in_use_panics() {
+        let timer_mock = TimerMock::new();
+        let timer = TimerUsingTimer::new(&timer_mock);
+        let channel_result = timer.allocate_task_channel();
+
+        let timestamp = 0x00000000;
+        let mut ppi_ch_mock = MockChannel::new();
+        ppi_ch_mock.expect_publish_by().returning(
+            |_: *const nrf52840_hal::pac::generic::Reg<
+                timer0::events_compare::EVENTS_COMPARE_SPEC,
+            >| Ok(()),
+        );
+
+        {
+            let mut channel = channel_result.unwrap();
+            channel.trigger_at(&ppi_ch_mock, timestamp).unwrap();
+
+            // Channel is dropped at the end of this block
+        }
     }
 
     #[test]
@@ -369,7 +623,8 @@ mod tests {
         let timer = TimerUsingTimer::new(&timer_mock);
 
         let timestamp = 0x87654321;
-        let expected_event_ptr = &timer_mock.events_compare[TRIGGER_TASK_CH] as *const _ as u32;
+        let expected_event_ptr =
+            &timer_mock.events_compare[TRIGGER_TASK_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -382,10 +637,26 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let result = timer.trigger_task_at(&ppi_ch_mock, timestamp);
+        let mut channel = timer.allocate_task_channel().unwrap();
+        let result = channel.trigger_at(&ppi_ch_mock, timestamp);
         assert!(result.is_ok());
 
-        assert_eq!(timer_mock.cc[TRIGGER_TASK_CH].read().cc().bits(), timestamp);
+        assert_eq!(
+            timer_mock.cc[TRIGGER_TASK_CH as usize].read().cc().bits(),
+            timestamp
+        );
+
+        // Tear down: disable channel before dropping it
+        ppi_ch_mock
+            .expect_stop_publishing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    timer0::events_compare::EVENTS_COMPARE_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        channel.disable(&ppi_ch_mock).unwrap();
     }
 
     #[test]
@@ -395,7 +666,8 @@ mod tests {
         let timer = TimerUsingTimer::new(&timer_mock);
 
         let timestamp = 0x01234567;
-        let expected_event_ptr = &timer_mock.events_compare[TRIGGER_TASK_CH] as *const _ as u32;
+        let expected_event_ptr =
+            &timer_mock.events_compare[TRIGGER_TASK_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -408,11 +680,24 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let result = timer.trigger_task_at(&ppi_ch_mock, timestamp);
+        let mut channel = timer.allocate_task_channel().unwrap();
+        let result = channel.trigger_at(&ppi_ch_mock, timestamp);
         assert!(result.is_ok());
 
-        let result = timer.trigger_task_at(&ppi_ch_mock, timestamp);
+        let result = channel.trigger_at(&ppi_ch_mock, timestamp);
         assert_eq!(result, Err(Error::WouldBlock));
+
+        // Tear down: disable channel before dropping it
+        ppi_ch_mock
+            .expect_stop_publishing_by()
+            .withf(
+                move |t: &*const nrf52840_hal::pac::generic::Reg<
+                    timer0::events_compare::EVENTS_COMPARE_SPEC,
+                >| *t as u32 == expected_event_ptr,
+            )
+            .times(1)
+            .returning(|_| Ok(()));
+        channel.disable(&ppi_ch_mock).unwrap();
     }
 
     #[test]
@@ -422,7 +707,8 @@ mod tests {
         let timer = TimerUsingTimer::new(&timer_mock);
 
         let timestamp = 0xcafecafe;
-        let expected_event_ptr = &timer_mock.events_compare[TRIGGER_TASK_CH] as *const _ as u32;
+        let expected_event_ptr =
+            &timer_mock.events_compare[TRIGGER_TASK_CH as usize] as *const _ as u32;
 
         let mut ppi_ch_mock = MockChannel::new();
         ppi_ch_mock
@@ -434,10 +720,9 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.trigger_task_at(&ppi_ch_mock, timestamp);
+        let mut channel = timer.allocate_task_channel().unwrap();
+        let result = channel.trigger_at(&ppi_ch_mock, timestamp);
         assert!(result.is_ok());
-
-        let handle = result.unwrap();
 
         ppi_ch_mock
             .expect_stop_publishing_by()
@@ -448,7 +733,7 @@ mod tests {
             )
             .times(1)
             .returning(|_| Ok(()));
-        let result = timer.stop_triggering_task(handle, &ppi_ch_mock);
+        let result = channel.disable(&ppi_ch_mock);
         assert!(result.is_ok());
     }
 

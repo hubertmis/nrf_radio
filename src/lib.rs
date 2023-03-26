@@ -42,3 +42,5 @@ pub mod frm_mem_mng;
 ///
 /// To use this module create an instance of [`Phy`](radio::Phy) and use methods of the created instance.
 pub mod radio;
+
+mod shared_resources;

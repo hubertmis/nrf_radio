@@ -17,18 +17,16 @@ use crate::crit_sect;
 use crate::error::Error;
 use crate::frm_mem_mng::frame_buffer::FrameBuffer;
 use crate::frm_mem_mng::single_pool_allocator::SinglePoolAllocator;
-use crate::hw::ppi::{
-    self,
-    traits::{Allocator, Channel},
-};
+use crate::hw::ppi::traits::Channel;
 use crate::hw::timer::{
-    traits::{TaskTrigger, Timer as TimerTrait, Timestamper},
+    traits::{TaskChannel, Timer as TimerTrait, TimestampChannel, Timestamper},
     Timer, Timestamp,
 };
 use crate::ieee802154::frame::{Frame, Parser};
 use crate::ieee802154::pib::Pib;
 use crate::mutex::Mutex;
-use crate::radio::{Context, Phy, RxOk as PhyRxOk, RxRequest, RxResources, TxRequest, TxResources};
+use crate::radio::{Context, RxOk as PhyRxOk, RxRequest, RxResources, TxRequest, TxResources};
+use crate::shared_resources::TimeSlicedResources;
 use crate::utils::tasklet::{Tasklet, TaskletListItem, TaskletQueue};
 
 type AckFrameAllocator = SinglePoolAllocator;
@@ -41,20 +39,17 @@ pub type RxDoneCallback = fn(Result<RxOk, Error>);
 static CALLBACK_DATA: Mutex<Option<CallbackData>> = Mutex::new(None);
 
 struct CallbackData {
-    phy: &'static Phy,
-    timer: &'static Timer,
+    shared_resources: Option<&'static mut TimeSlicedResources<'static>>,
     pib: &'static Pib,
-    ppi_allocator: &'static ppi::Allocator,
     tasklet_queue: &'static TaskletQueue<'static>,
     ack_frame_allocator: &'static AckFrameAllocator,
-
-    timer_trigger_handle: Option<<Timer as TaskTrigger>::TriggerHandle>,
 
     rx_result: Option<Result<RxOk, Error>>,
     receive_done_tasklet: Tasklet<'static>,
     receive_done_tasklet_ref: Option<&'static mut TaskletListItem<'static>>,
     receive_done_callback: Option<RxDoneCallback>,
 }
+unsafe impl Send for CallbackData {}
 
 /// Data associated with a successful RX operation
 pub struct RxOk {
@@ -125,9 +120,9 @@ impl RxOk {
 
     /// Get sent acknowledgement frame (if one was sent)
     ///
-    /// This function moves ownership of the received frame to the caller. It can be used once on a
-    /// single `RxOk` instance. Calling this function multiple times has the same result as calling
-    /// it when no Ack was sent (returning `None`).
+    /// This function moves ownership of the transmitted ack frame to the caller. It can be used
+    /// once on a single `RxOk` instance. Calling this function multiple times has the same result
+    /// as calling it when no Ack was sent (returning `None`).
     ///
     /// # Example
     ///
@@ -214,21 +209,15 @@ impl Rx {
     /// # }
     /// ```
     pub fn new(
-        phy: &'static Phy,
         pib: &'static Pib,
         tasklet_queue: &'static TaskletQueue<'static>,
-        ppi_allocator: &'static ppi::Allocator,
-        timer: &'static Timer,
         ack_frame_allocator: &'static AckFrameAllocator,
     ) -> Self {
         let new_callback_data = CallbackData {
-            phy,
+            shared_resources: None,
             pib,
             tasklet_queue,
-            ppi_allocator,
-            timer,
             ack_frame_allocator,
-            timer_trigger_handle: None,
             rx_result: None,
             receive_done_tasklet: Tasklet::new(Rx::receive_done_tasklet_fn, &CALLBACK_DATA),
             receive_done_tasklet_ref: None,
@@ -364,22 +353,27 @@ impl Rx {
     /// ```
     pub fn start(
         &self,
+        shared_resources: &'static mut TimeSlicedResources,
         rx_buffer: FrameBuffer<'static>,
         rx_done_callback: RxDoneCallback,
     ) -> Result<(), Error> {
         // TODO: return error if already receiving
         self.use_data(|d| {
-            let ppi_ch = d.ppi_allocator.allocate_channel()?;
+            d.shared_resources = Some(shared_resources);
+            let shared_resources = d.shared_resources.as_mut().unwrap();
+            let ppi_ch = shared_resources.ppi_channels[0].take().unwrap();
 
             d.receive_done_callback = Some(rx_done_callback);
-            let result = d.timer.start_capturing_timestamps(&ppi_ch);
+            let result = shared_resources.timestamp_channel.start_capturing(&ppi_ch);
             debug_assert!(result.is_ok());
             ppi_ch.enable();
-            d.phy.rx(
-                RxRequest::new(rx_buffer, Rx::phy_rx_callback, self.callback_data)
-                    .with_ppi_channel_on_phyend(ppi_ch)
-                    .now(),
+            shared_resources.phy.rx(RxRequest::new(
+                rx_buffer,
+                Rx::phy_rx_callback,
+                self.callback_data,
             )
+            .with_ppi_channel_on_phyend(ppi_ch)
+            .now())
         })
     }
 
@@ -390,11 +384,13 @@ impl Rx {
     ) {
         defmt::info!("rx callback");
 
-        let ppi_ch = resources.phyend_ppi_channel().unwrap();
         Rx::use_data_from_context(context, |d| {
+            let ppi_ch = resources.phyend_ppi_channel().unwrap();
+            let sh_res = d.shared_resources.as_mut().unwrap();
             ppi_ch.disable();
-            let result = d.timer.stop_capturing_timestamps(&ppi_ch);
+            let result = sh_res.timestamp_channel.stop_capturing(&ppi_ch);
             debug_assert!(result.is_ok());
+            sh_res.ppi_channels[0] = Some(ppi_ch);
         });
 
         match result {
@@ -402,6 +398,8 @@ impl Rx {
                 let frame = Frame::from_frame_buffer(&rx_ok.frame);
                 if let Ok(frame) = frame {
                     Rx::use_data_from_context(context, |d| {
+                        let sh_res = d.shared_resources.as_mut().unwrap();
+
                         let filter = Filter::new(d.pib);
                         let filter_result = filter.filter_parsed_frame_part(&frame);
                         let filter_passed = filter_result.is_ok();
@@ -409,7 +407,7 @@ impl Rx {
                         let ar_option = frame.ar().unwrap();
                         let ack_requested = ar_option.is_some() && ar_option.unwrap();
 
-                        let phyend_timestamp = Rx::phyend_timestamp(d);
+                        let phyend_timestamp = Rx::phyend_timestamp(&sh_res.timestamp_channel);
 
                         if filter_passed && ack_requested {
                             // TODO: Handle transmitting ACK after relevant fields are received
@@ -425,13 +423,15 @@ impl Rx {
                             let prev_rx_result = d.rx_result.replace(Ok(new_rx_result));
                             debug_assert!(prev_rx_result.is_none());
 
+                            let ppi_ch = sh_res.ppi_channels[0].take().unwrap();
                             // TODO: Replace magic number 192 with AIFS
                             // TODO: Get TX ramp up time + some other delay (40 + 23) from Phy
                             let target_tx_time = Timestamp::wrapping_add(phyend_timestamp, 192);
                             let target_tx_start_time = Timestamp::wrapping_sub(target_tx_time, 63);
+                            let timer_channel = &mut sh_res.timer_task_channel;
                             let timer_result =
-                                d.timer.trigger_task_at(&ppi_ch, target_tx_start_time);
-                            d.timer_trigger_handle = Some(timer_result.unwrap());
+                                timer_channel.trigger_at(&ppi_ch, target_tx_start_time);
+                            timer_result.unwrap();
 
                             ppi_ch.enable();
 
@@ -446,19 +446,20 @@ impl Rx {
                                 target_tx_start_time,
                                 tx_detectability_delay,
                             );
-                            let tx_result = d.phy.tx(tx_request);
+                            let tx_result = sh_res.phy.tx(tx_request);
                             debug_assert!(tx_result.is_ok());
 
-                            if d.timer
+                            if sh_res
+                                .timestamp_timer
                                 .was_timestamp_in_past(&target_tx_start_time)
                                 .unwrap()
                             {
-                                while !d
-                                    .timer
+                                while !sh_res
+                                    .timestamp_timer
                                     .was_timestamp_in_past(&tx_detectability_timestamp)
                                     .unwrap()
                                 {}
-                                if !d.phy.was_tx_started().unwrap() {
+                                if !sh_res.phy.was_tx_started().unwrap() {
                                     let mut rx_result = d.rx_result.take().unwrap();
                                     rx_result.as_mut().unwrap().ack = None;
                                     Rx::notify_rx_done(d, rx_result);
@@ -486,10 +487,15 @@ impl Rx {
                         if d.pib.get_promiscuous() {
                             Rx::notify_rx_done(
                                 d,
-                                Ok(RxOk::new(rx_ok.frame, Rx::phyend_timestamp(d))),
+                                Ok(RxOk::new(
+                                    rx_ok.frame,
+                                    Rx::phyend_timestamp(
+                                        &d.shared_resources.as_ref().unwrap().timestamp_channel,
+                                    ),
+                                )),
                             )
                         } else {
-                            Rx::notify_rx_done(d, Err(Error::InvalidFrame))
+                            Rx::notify_rx_done(d, Err(Error::InvalidFrame));
                         }
                     });
                 }
@@ -500,8 +506,8 @@ impl Rx {
         }
     }
 
-    fn phyend_timestamp(d: &CallbackData) -> Timestamp {
-        d.timer.timestamp().unwrap()
+    fn phyend_timestamp(timestamp_channel: &<Timer as Timestamper>::Channel) -> Timestamp {
+        timestamp_channel.timestamp().unwrap()
     }
 
     fn phy_tx_ack_callback(
@@ -510,15 +516,16 @@ impl Rx {
         resources: &mut TxResources,
     ) {
         Rx::use_data_from_context(context, |d| {
+            let sh_res = d.shared_resources.as_mut().unwrap();
             let ppi_ch = resources.start_channel().unwrap();
             ppi_ch.disable();
-            let result = d
-                .timer
-                .stop_triggering_task(d.timer_trigger_handle.take().unwrap(), &ppi_ch);
+            let result = sh_res.timer_task_channel.disable(&ppi_ch);
             debug_assert!(result.is_ok());
 
+            sh_res.ppi_channels[0] = Some(ppi_ch);
+
             let rx_result = d.rx_result.take();
-            Rx::notify_rx_done(d, rx_result.unwrap())
+            Rx::notify_rx_done(d, rx_result.unwrap());
         });
     }
 
